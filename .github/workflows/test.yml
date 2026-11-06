@@ -14,16 +14,12 @@ name: Test
 # - Screen Verdicts fails unless Screen succeeded and every blocking call failed. It is the job to
 #   make required, not the calls it checks.
 # - Explain calls _explain.yml with a synthetic results artifact, which Prepare Explain uploads, and
-#   Explain Outputs checks that it returned a title and a body. On a pull request, _explain.yml posts
-#   its explanation as one comment, found by the test-only marker below and updated by later runs,
-#   so each pull request gets one test comment.
+#   Explain Outputs checks that it returned a title and a body. _explain.yml only posts on pull
+#   requests, so this run posts nothing.
 #
-# Screen and Explain need the CLAUDE_CODE_OAUTH_TOKEN secret, which fork pull requests don't get, so
-# they skip forks. Explain only runs on pull requests from a branch of this repository whose author
-# passes the author guard of _explain.yml, because that guard would skip the call otherwise; it
-# doesn't run in the merge queue, which explains nothing new.
+# Merge queue only: the queue branch belongs to this repository, so the jobs always get the
+# secrets, and fork pull requests never run it.
 on:
-  pull_request:
   merge_group:
 
 permissions: {}
@@ -41,9 +37,6 @@ defaults:
 jobs:
   screen:
     name: Screen
-    if: >-
-      github.event_name != 'pull_request'
-      || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read # Check out the default branch, which claude-code-action needs on pull requests
     uses: $/.github/workflows/_screen.yml
@@ -153,15 +146,6 @@ jobs:
 
   explain-results:
     name: Prepare Explain
-    # The same pull requests the author guard of _explain.yml admits, from branches of this
-    # repository, with allowed-bots as passed below.
-    if: >-
-      github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
-      && (
-        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
-        || github.event.pull_request.user.login == 'renovate[bot]'
-      )
     runs-on: ubuntu-latest
     permissions: {} # None: uploading an artifact needs no token scope
     steps:
@@ -192,8 +176,8 @@ jobs:
     name: Explain
     needs: explain-results
     permissions:
-      contents: read # Check out the pull request, so Claude can read it
-      pull-requests: write # Create or update the test comment
+      contents: read # Check out the merge group's commit, so Claude can read it
+      pull-requests: write # Declared by the comment job of _explain.yml, which merge groups skip
     uses: $/.github/workflows/_explain.yml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -206,7 +190,6 @@ jobs:
         synthetic file example.txt and the script scripts/check-example.sh.
       prompt: |
         REPO: ${{ github.repository }}
-        PR NUMBER: ${{ github.event.pull_request.number }}
 
         This is a test run of the shared workflow _explain.yml, not a real failure. The results
         directory holds test.log, the synthetic log of a made-up check.
