@@ -235,7 +235,7 @@ jobs:
       # pull request can't add or weaken them. The token is revoked when the job ends.
       #
       # actions-lock.sts.yaml accepts only released versions of this file, at refs/tags/v...; this
-      # repository's pull requests run their own copy, at refs/pull/<n>/merge, and get no token.
+      # repository's pull requests run their own copy, at refs/pull/<n>/merge, and request actions-lock.shared.
       - name: Get Fix Token
         if: steps.fix.outputs.changed == 'true'
         id: sts
@@ -243,7 +243,7 @@ jobs:
         uses: step-security/octo-sts-action@v1.1.1
         with:
           scope: ${{ github.repository_owner }}
-          identity: actions-lock
+          identity: ${{ github.repository == 'actions-fyi/shared-workflows' && 'actions-lock.shared' || 'actions-lock' }}
       - name: Report Missing Fix Token
         if: steps.fix.outputs.changed == 'true' && steps.sts.outcome != 'success'
         run: |
