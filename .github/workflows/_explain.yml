@@ -1,9 +1,8 @@
 name: Explain Results
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags. Workflows in other repositories, ruleset workflows included,
-# call it by full path and tag, e.g.
-# `uses: actions-fyi/shared-workflows/.github/workflows/_explain.yml@v1.0.0`: in a ruleset
-# workflow, GitHub resolves `$/` against the target repository, where this file doesn't exist.
+# call it by full path and tag: in a ruleset workflow, GitHub resolves `$/` against the target
+# repository, where this file doesn't exist.
 # Shared workflows in this repository, such as _actions-lock.yml, call it as their sibling with
 # `uses: $/.github/workflows/_explain.yml`, the same-repository syntax of workflow lockfiles, which
 # takes no ref. It runs as part of the caller's run, in the target repository's context: the
