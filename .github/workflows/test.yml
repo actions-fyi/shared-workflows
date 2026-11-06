@@ -1,0 +1,162 @@
+name: Test
+# Tests the lower-level shared workflows, _screen.yml and _explain.yml, which other shared workflows
+# call rather than any event. The top-level ones have callers of their own in this repository
+# (actions-lock.yml, zizmor.yml, renovate.yml), so their pull requests already run them.
+#
+# A job that calls a reusable workflow can't continue on error, so a call that fails turns the whole
+# run red. The live calls therefore only test cases that must pass, and the cases that must fail are
+# tested offline:
+# - Screen Check runs the "Check for Secrets" step of _screen.yml, read from the workflow file, on
+#   dummy tokens in each encoding it covers, fake credentials and clean text, and asserts pass or
+#   fail per case, and that no output holds the text; see tests/screen_check.py.
+# - Screen calls _screen.yml with a harmless text, which must pass both the deterministic check and
+#   Claude Haiku's verdict.
+# - Explain calls _explain.yml with a synthetic results artifact, which Prepare Explain uploads, and
+#   Explain Outputs checks that it returned a title and a body. On a pull request, _explain.yml posts
+#   its explanation as one comment, found by the test-only marker below and updated by later runs,
+#   so each pull request gets one test comment.
+#
+# The live calls need the CLAUDE_CODE_OAUTH_TOKEN secret, which fork pull requests don't get, so
+# they skip forks. Explain only runs on pull requests from a branch of this repository whose author
+# passes the author guard of _explain.yml, because that guard would skip the call otherwise; it
+# doesn't run in the merge queue, which explains nothing new.
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions: {}
+
+# A newer push tests a newer version, so an older run, and the Claude calls in it, is cancelled.
+# Each merge group entry has its own ref, so merge groups never share a group.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  screen-check:
+    name: Screen Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Check out the workflow and the tests
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test Check for Secrets
+        run: python3 tests/screen_check.py .github/workflows/_screen.yml
+
+  screen:
+    name: Screen
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read # Check out the default branch, which claude-code-action needs on pull requests
+    uses: $/.github/workflows/_screen.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    with:
+      text: |
+        Test of _screen.yml: the workflow .github/workflows/test.yml uses actions/checkout@v7.0.1,
+        locked at commit 3d3c42e5aac5ba805825da76410c181273ba90b1. Run gh actions-lock and push the
+        result.
+      context: |
+        A harmless test text from this repository's own test workflow: one or two sentences that
+        name a workflow file, an action and its version, a commit SHA (40 hex characters) and a
+        command.
+
+  explain-results:
+    name: Prepare Explain
+    # The same pull requests the author guard of _explain.yml admits, from branches of this
+    # repository, with allowed-bots as passed below.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+        || github.event.pull_request.user.login == 'renovate[bot]'
+      )
+    runs-on: ubuntu-latest
+    permissions: {} # None: uploading an artifact needs no token scope
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Write Synthetic Results
+        run: |
+          results="$RUNNER_TEMP/explain-test-results"
+          mkdir -p "$results"
+          cat > "$results/test.log" <<'EOF'
+          Run ./scripts/check-example.sh
+          checking example.txt
+          error: example.txt: missing trailing newline (synthetic failure for the _explain.yml test)
+          Error: Process completed with exit code 1.
+          EOF
+      # Replaces the artifact when a re-run of all jobs uploads it again.
+      - name: Upload Results
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: explain-test-results
+          path: ${{ runner.temp }}/explain-test-results/
+          if-no-files-found: error
+          overwrite: true
+
+  explain:
+    name: Explain
+    needs: explain-results
+    permissions:
+      contents: read # Check out the pull request, so Claude can read it
+      pull-requests: write # Create or update the test comment
+    uses: $/.github/workflows/_explain.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    with:
+      results: explain-test-results
+      marker: "<!-- shared-workflows-explain-test -->"
+      allowed-bots: renovate[bot]
+      screen-context: >-
+        This is a test of _explain.yml, so the explanation may say that it is a test and name the
+        synthetic file example.txt and the script scripts/check-example.sh.
+      prompt: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ github.event.pull_request.number }}
+
+        This is a test run of the shared workflow _explain.yml, not a real failure. The results
+        directory holds test.log, the synthetic log of a made-up check.
+
+        Write a short PR comment in GitHub Markdown: one sentence saying that this comment is a
+        test of _explain.yml from the Test workflow, then one or two sentences on what test.log
+        reports. Don't read other files. No preamble, no headings, no praise.
+
+  explain-outputs:
+    name: Explain Outputs
+    needs: explain
+    runs-on: ubuntu-latest
+    permissions: {} # None: only reads the call's outputs
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      # The outputs passed the screen, so their length may be printed, but not their text.
+      - name: Check Explain Outputs
+        env:
+          TITLE: ${{ needs.explain.outputs.title }}
+          BODY: ${{ needs.explain.outputs.body }}
+        run: |
+          if [[ -z "${TITLE//[[:space:]]/}" || -z "${BODY//[[:space:]]/}" ]]; then
+            echo "::error::_explain.yml returned no title or no body."
+            exit 1
+          fi
+          echo "::notice::_explain.yml returned a title of ${#TITLE} and a body of ${#BODY} characters."
