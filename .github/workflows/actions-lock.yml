@@ -26,7 +26,4 @@ jobs:
     permissions:
       contents: read # Compare the changes, read the workflows, check out the pull request
       id-token: write # Exchange the fix job's OIDC token with Octo STS
-      pull-requests: write # Create or update the explanation comment
     uses: $/.github/workflows/_actions-lock.yml
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
