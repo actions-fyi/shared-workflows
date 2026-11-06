@@ -28,8 +28,6 @@ name: Check Actions Lockfile
 #   caller must also run on merge_group, where this verifies the merged result.
 # - push: checks when the pushed commits change a workflow or action file, and checks everything
 #   when the push creates the branch.
-# - schedule and workflow_dispatch: always check. Upstream drift, a moved tag or a vanished pin,
-#   shows up without any file change.
 # Any other event checks too, because its changes can't be listed.
 #
 # Rulesets ignore paths filters too, and a required workflow that never runs would block merging.
@@ -37,11 +35,10 @@ name: Check Actions Lockfile
 # or push changes a workflow or action file, the lockfile included. If not, the check job and the
 # jobs after it are skipped, and the run still succeeds, because the changes job does. On pull
 # requests, a pin that stops verifying upstream is therefore reported by the next pull request that
-# touches the workflows, not by unrelated ones; the scheduled run reports it sooner.
+# touches the workflows, not by unrelated ones.
 #
 # Outside pull requests, the fix, results and comment jobs stay skipped: a failed check only fails
-# the run. Reporting failures of push and scheduled runs as issues is left to a later rework of
-# _explain.yml.
+# the run. Reporting failures of push runs as issues is left to a later rework of _explain.yml.
 #
 # The check job fails when .github/workflows/actions.lock is out of sync with the workflows, or a
 # locked pin no longer verifies upstream. Repositories without a lockfile aren't onboarded and are
@@ -105,8 +102,7 @@ jobs:
       # lists at most 300 files, and a larger or unlistable change is checked rather than guessed.
       # The paths are the ones the fix job may commit.
       #
-      # A push that creates the branch has no before (all zeros), and scheduled and manual runs
-      # look for upstream drift, which no file change shows, so these check everything.
+      # A push that creates the branch has no before (all zeros), so it checks everything.
       - name: Find Changed Workflows
         id: changes
         env:

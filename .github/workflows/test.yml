@@ -3,27 +3,28 @@ name: Test
 # call rather than any event. The top-level ones have callers of their own in this repository
 # (actions-lock.yml, zizmor.yml, renovate.yml), so their pull requests already run them.
 #
-# A job that calls a reusable workflow can't continue on error, so a call that fails turns the whole
-# run red. The live calls therefore only test cases that must pass, and the cases that must fail are
-# tested offline:
-# - Screen Check runs the "Check for Secrets" step of _screen.yml, read from the workflow file, on
-#   dummy tokens in each encoding it covers, fake credentials and clean text, and asserts pass or
-#   fail per case, and that no output holds the text; see tests/screen_check.py.
+# A job that calls a reusable workflow can't continue on error, so a call that must fail shows as a
+# failed job in the run:
 # - Screen calls _screen.yml with a harmless text, which must pass both the deterministic check and
 #   Claude Haiku's verdict.
+# - Screen Blocks Token, Screen Blocks Token (base64) and Screen Blocks Credential call _screen.yml
+#   with a text that must be blocked: a dummy token, passed in as the secret, raw and
+#   base64-encoded, and a GitHub token shape. Prepare Screen builds these at run time, so no
+#   secret-shaped string sits in the repository. These jobs are expected to show as failed.
+# - Screen Verdicts fails unless Screen succeeded and every blocking call failed. It is the job to
+#   make required, not the calls it checks.
 # - Explain calls _explain.yml with a synthetic results artifact, which Prepare Explain uploads, and
 #   Explain Outputs checks that it returned a title and a body. On a pull request, _explain.yml posts
 #   its explanation as one comment, found by the test-only marker below and updated by later runs,
 #   so each pull request gets one test comment.
 #
-# The live calls need the CLAUDE_CODE_OAUTH_TOKEN secret, which fork pull requests don't get, so
+# Screen and Explain need the CLAUDE_CODE_OAUTH_TOKEN secret, which fork pull requests don't get, so
 # they skip forks. Explain only runs on pull requests from a branch of this repository whose author
 # passes the author guard of _explain.yml, because that guard would skip the call otherwise; it
 # doesn't run in the merge queue, which explains nothing new.
 on:
   pull_request:
   merge_group:
-  workflow_dispatch:
 
 permissions: {}
 
@@ -38,23 +39,6 @@ defaults:
     shell: bash
 
 jobs:
-  screen-check:
-    name: Screen Check
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read # Check out the workflow and the tests
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
-        with:
-          egress-policy: audit
-      - name: Checkout Repository
-        uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - name: Test Check for Secrets
-        run: python3 tests/screen_check.py .github/workflows/_screen.yml
-
   screen:
     name: Screen
     if: >-
@@ -74,6 +58,98 @@ jobs:
         A harmless test text from this repository's own test workflow: one or two sentences that
         name a workflow file, an action and its version, a commit SHA (40 hex characters) and a
         command.
+
+  screen-inputs:
+    name: Prepare Screen
+    runs-on: ubuntu-latest
+    permissions: {} # None: only writes job outputs
+    outputs:
+      token: ${{ steps.values.outputs.token }}
+      token-base64: ${{ steps.values.outputs.token-base64 }}
+      credential: ${{ steps.values.outputs.credential }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Build Test Values
+        id: values
+        run: |
+          token=dummy-screen-test-token-0123456789
+          credential="gh"
+          credential+="p_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          {
+            echo "token=$token"
+            echo "token-base64=$(printf '%s' "$token" | base64 -w0)"
+            echo "credential=$credential"
+          } >> "$GITHUB_OUTPUT"
+
+  screen-block-token:
+    name: Screen Blocks Token
+    needs: screen-inputs
+    permissions:
+      contents: read # Check out the default branch, which claude-code-action needs on pull requests
+    uses: $/.github/workflows/_screen.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.screen-inputs.outputs.token }}
+    with:
+      text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.token }}"
+      context: A test text from this repository's own test workflow, which must be blocked.
+
+  screen-block-token-base64:
+    name: Screen Blocks Token (base64)
+    needs: screen-inputs
+    permissions:
+      contents: read # Check out the default branch, which claude-code-action needs on pull requests
+    uses: $/.github/workflows/_screen.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.screen-inputs.outputs.token }}
+    with:
+      text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.token-base64 }}"
+      context: A test text from this repository's own test workflow, which must be blocked.
+
+  screen-block-credential:
+    name: Screen Blocks Credential
+    needs: screen-inputs
+    permissions:
+      contents: read # Check out the default branch, which claude-code-action needs on pull requests
+    uses: $/.github/workflows/_screen.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.screen-inputs.outputs.token }}
+    with:
+      text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.credential }}"
+      context: A test text from this repository's own test workflow, which must be blocked.
+
+  screen-verdicts:
+    name: Screen Verdicts
+    if: always()
+    needs: [screen, screen-block-token, screen-block-token-base64, screen-block-credential]
+    runs-on: ubuntu-latest
+    permissions: {} # None: only reads the results of the calls
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Check Screen Verdicts
+        env:
+          CLEAN: ${{ needs.screen.result }}
+          TOKEN: ${{ needs.screen-block-token.result }}
+          TOKEN_BASE64: ${{ needs.screen-block-token-base64.result }}
+          CREDENTIAL: ${{ needs.screen-block-credential.result }}
+        run: |
+          status=0
+          expect() {
+            if [[ "$3" != "$2" ]]; then
+              echo "::error::$1 ended with ${3:-no result}, expected $2."
+              status=1
+            fi
+          }
+          expect "Screen" success "$CLEAN"
+          expect "Screen Blocks Token" failure "$TOKEN"
+          expect "Screen Blocks Token (base64)" failure "$TOKEN_BASE64"
+          expect "Screen Blocks Credential" failure "$CREDENTIAL"
+          exit "$status"
 
   explain-results:
     name: Prepare Explain

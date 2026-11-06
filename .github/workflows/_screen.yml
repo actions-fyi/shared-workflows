@@ -64,66 +64,69 @@ jobs:
       # text. A token embedded in a longer string is base64-encoded from one of three byte
       # offsets, so each offset's aligned encoding is searched for.
       - name: Check for Secrets
-        shell: python
+        uses: actions/github-script@v9.0.0
         env:
           TEXT: ${{ inputs.text }}
           SECRET: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          import base64, os, re, sys, urllib.parse
+        with:
+          script: |
+            // Whitespace is listed rather than matched with \s or trim(), which miss U+001C to
+            // U+001F and U+0085 and add U+FEFF.
+            const space = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g;
+            const text = process.env.TEXT;
+            const secret = process.env.SECRET.replace(
+              new RegExp(`^${space.source}|${space.source}$`, 'g'), '');
+            const compact = text.replace(space, '');
+            const failed = [];
 
-          text = os.environ["TEXT"]
-          secret = os.environ["SECRET"].strip()
-          compact = re.sub(r"\s+", "", text)
-          failed = []
+            const fail = (check) => failed.push(`The text contains ${check}.`);
 
-          def fail(check):
-              failed.append(f"The text contains {check}.")
-
-          if len(secret) < 8:
-              failed.append("The Claude token to compare against is missing.")
-          else:
-              raw = secret.encode()
-              def aligned(encode):
-                  for offset in range(3):
-                      part = raw[offset:]
-                      part = part[: len(part) - len(part) % 3]
-                      if part:
-                          yield encode(part).decode()
-              case_sensitive = {
-                  "the token": [secret],
-                  "the token, reversed": [secret[::-1]],
-                  "the token, base64": list(aligned(base64.b64encode)),
-                  "the token, base64url": list(aligned(base64.urlsafe_b64encode)),
+            if ([...secret].length < 8) {
+              failed.push('The Claude token to compare against is missing.');
+            } else {
+              const raw = Buffer.from(secret);
+              const aligned = (encoding) => [0, 1, 2]
+                .map((offset) => raw.subarray(offset, raw.length - (raw.length - offset) % 3))
+                .filter((part) => part.length > 0)
+                .map((part) => part.toString(encoding));
+              // Every byte but letters, digits and _.-~ as %XX, and with plus, a space as +.
+              const quote = (plus) => [...raw].map((byte) => {
+                const char = String.fromCharCode(byte);
+                if (/[A-Za-z0-9_.~-]/.test(char)) return char;
+                if (plus && char === ' ') return '+';
+                return '%' + byte.toString(16).toUpperCase().padStart(2, '0');
+              }).join('');
+              const caseSensitive = {
+                'the token': [secret],
+                'the token, reversed': [[...secret].reverse().join('')],
+                'the token, base64': aligned('base64'),
+                'the token, base64url': aligned('base64url'),
+              };
+              const caseInsensitive = {
+                'the token, hex': [raw.toString('hex')],
+                'the token, URL-encoded': [quote(false), quote(true)],
+              };
+              for (const [check, needles] of Object.entries(caseSensitive)) {
+                if (needles.some((n) => text.includes(n) || compact.includes(n))) fail(check);
               }
-              case_insensitive = {
-                  "the token, hex": [raw.hex()],
-                  "the token, URL-encoded": [
-                      urllib.parse.quote(secret, safe=""),
-                      urllib.parse.quote_plus(secret, safe=""),
-                  ],
+              const lowered = [text.toLowerCase(), compact.toLowerCase()];
+              for (const [check, needles] of Object.entries(caseInsensitive)) {
+                if (needles.some((n) => lowered.some((t) => t.includes(n.toLowerCase())))) fail(check);
               }
-              for check, needles in case_sensitive.items():
-                  if any(n in text or n in compact for n in needles):
-                      fail(check)
-              lowered = (text.lower(), compact.lower())
-              for check, needles in case_insensitive.items():
-                  if any(n.lower() in t for n in needles for t in lowered):
-                      fail(check)
+            }
 
-          patterns = {
-              "a GitHub token": r"gh[pousr]_|github_pat_",
-              "an Anthropic API key": r"sk-ant-",
-              "an AWS access key ID": r"AKIA[0-9A-Z]{16}",
-              "a Slack token": r"xox[abprs]-",
-              "a private key": r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
-          }
-          for check, pattern in patterns.items():
-              if re.search(pattern, text) or re.search(pattern, compact):
-                  fail(check)
+            const patterns = {
+              'a GitHub token': /gh[pousr]_|github_pat_/,
+              'an Anthropic API key': /sk-ant-/,
+              'an AWS access key ID': /AKIA[0-9A-Z]{16}/,
+              'a Slack token': /xox[abprs]-/,
+              'a private key': /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+            };
+            for (const [check, pattern] of Object.entries(patterns)) {
+              if (pattern.test(text) || pattern.test(compact)) fail(check);
+            }
 
-          for message in failed:
-              print(f"::error::{message}")
-          sys.exit(1 if failed else 0)
+            for (const message of failed) core.setFailed(message);
       # The default branch, never the pull request's head: on pull requests, claude-code-action
       # needs a Git working tree to restore its configuration from the base branch, and Claude
       # Code loads CLAUDE.md and .claude/ from it.
