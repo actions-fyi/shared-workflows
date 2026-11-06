@@ -57,13 +57,12 @@ name: Check Actions Lockfile
 # so the new head would wait for its required checks forever, and because that token can't change
 # files under .github/workflows/. It uses a short-lived token from Octo STS instead, granted by an
 # org-level trust policy in .github/chainguard/ of actions-fyi/.github. The fix job runs in this
-# file, so the token's job_workflow_ref names this file, not the caller. In other repositories,
-# callers run a released version, at refs/tags/v..., which actions-lock.sts.yaml (identity
-# actions-lock) matches. In this repository, a pull request runs its own copy of this file, at
-# refs/pull/<n>/merge, so actions-lock.shared.sts.yaml (identity actions-lock.shared) applies
-# instead: it pins the subject to this repository and limits the token to it. The fix job only
-# picks the identity; the policies decide what's allowed. The policies must accept this file
-# before a caller switches to it, or the fix job gets no token.
+# file, so the token's job_workflow_ref names this file, not the caller. Callers run a released
+# version, at refs/tags/v..., which actions-lock.sts.yaml (identity actions-lock) matches. In this
+# repository, a pull request runs its own copy of this file, at refs/pull/<n>/merge, which that
+# policy doesn't accept, so the fix job gets no token there and only reports the failure. The fix
+# job only requests the identity; the policy decides what's allowed. The policy must accept this
+# file before a caller switches to it, or the fix job gets no token.
 #
 # On the same pull requests, the results job uploads the findings and the fix's outcome as an
 # artifact, and the comment job calls the reusable _explain.yml, where Claude Haiku explains the
@@ -277,11 +276,8 @@ jobs:
       # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
       # pull request can't add or weaken them. The token is revoked when the job ends.
       #
-      # Other repositories run a released version of this file, at refs/tags/v..., and request
-      # actions-lock. This repository's pull requests run their own copy, at refs/pull/<n>/merge,
-      # which that policy doesn't accept, so they request actions-lock.shared, whose policy pins
-      # the subject to this repository and limits the token to it. The expression only picks the
-      # identity; the policies decide what's allowed.
+      # actions-lock.sts.yaml accepts only released versions of this file, at refs/tags/v...; this
+      # repository's pull requests run their own copy, at refs/pull/<n>/merge, and get no token.
       - name: Get Fix Token
         if: steps.fix.outputs.changed == 'true'
         id: sts
@@ -289,7 +285,7 @@ jobs:
         uses: step-security/octo-sts-action@v1.1.1
         with:
           scope: ${{ github.repository_owner }}
-          identity: ${{ github.repository == 'actions-fyi/shared-workflows' && 'actions-lock.shared' || 'actions-lock' }}
+          identity: actions-lock
       - name: Report Missing Fix Token
         if: steps.fix.outputs.changed == 'true' && steps.sts.outcome != 'success'
         run: |
