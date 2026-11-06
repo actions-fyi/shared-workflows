@@ -11,6 +11,10 @@ workflows:
         - 'actions/github-script@v9.0.0'
         - 'step-security/claude-code-action@v1.0.238'
         - 'step-security/harden-runner@v2.22.3'
+    '.github/workflows/_label-sync.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'step-security/harden-runner@v2.22.4'
+        - 'step-security/label-sync@v2.3.3'
     '.github/workflows/_pr-metadata.yml':
         - 'actions/github-script@v9.0.0'
         - 'step-security/claude-code-action@v1.0.238'
@@ -24,6 +28,10 @@ workflows:
         - 'actions/github-script@v9.0.0'
         - 'step-security/claude-code-action@v1.0.238'
         - 'step-security/harden-runner@v2.22.3'
+    '.github/workflows/_triage.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'step-security/claude-code-action@v1.0.238'
+        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_zizmor.yml':
         - 'actions/checkout@v7.0.1'
         - 'step-security/harden-runner@v2.22.3'
@@ -71,6 +79,16 @@ dependencies:
         commit: 'sha1-46b06cea07f9e64621fdf066ba77ac6915163d43'
         owner_id: 88700172
         repo_id: 422287306
+    'step-security/harden-runner@v2.22.4':
+        ref: 'v2.22.4'
+        commit: 'sha1-1d88384fd173af6ecb012dfd0264a306b711241a'
+        owner_id: 88700172
+        repo_id: 422287306
+    'step-security/label-sync@v2.3.3':
+        ref: 'v2.3.3'
+        commit: 'sha1-f396e0b83fd70ebaa9ae8b859f7f2bfdae95beaf'
+        owner_id: 88700172
+        repo_id: 1344620599
     'step-security/octo-sts-action@v1.1.1':
         ref: 'v1.1.1'
         commit: 'sha1-9719306bce0808715a4de71515c7cdcbc560c38b'
