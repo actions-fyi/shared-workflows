@@ -24,7 +24,6 @@ on:
 
 permissions: {}
 
-# A newer push tests a newer version, so an older run, and the Claude calls in it, is cancelled.
 # Each merge group entry has its own ref, so merge groups never share a group.
 concurrency:
   group: test-${{ github.ref }}
