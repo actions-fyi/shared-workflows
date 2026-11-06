@@ -1,0 +1,188 @@
+name: Validate
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the Renovate config checks that used to be
+# renovate.yml of actions-fyi/.github. Workflows in other repositories, ruleset workflows included,
+# call it by full path and tag, e.g.
+# `uses: actions-fyi/shared-workflows/.github/workflows/_renovate.yml@v1.0.0`: in a ruleset
+# workflow, GitHub resolves `$/` against the target repository, where this file doesn't exist.
+# This repository's own renovate.yml calls it with `uses: $/.github/workflows/_renovate.yml`. It
+# runs as part of the caller's run, in the target repository's context: the caller's event, token
+# and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   contents: read        # renovate, upstream, suggest: read the Renovate configs
+#   pull-requests: write  # renovate: review permission; suggest: post the suggestions
+#
+# Events: the renovate and upstream jobs run on any event, e.g. pull_request, merge_group and push.
+# The suggest job only runs on pull requests from a branch of the same repository.
+on:
+  workflow_call:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  SCHEMA_URL: https://docs.renovatebot.com/renovate-schema.json
+  UPSTREAM: github>actions-fyi/.github
+
+jobs:
+  renovate:
+    name: Renovate Config
+    runs-on: ubuntu-latest
+    concurrency:
+      group: lint-${{ github.ref }}
+    permissions:
+      contents: read # Read workflow files
+      pull-requests: write # For review permission
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+      - name: Find Configs
+        id: files
+        run: >-
+          echo "files=$(git ls-files --
+          renovate.json renovate.jsonc renovate.json5
+          .github/renovate.json .github/renovate.jsonc .github/renovate.json5
+          .gitlab/renovate.json .gitlab/renovate.jsonc .gitlab/renovate.json5
+          .renovaterc .renovaterc.json .renovaterc.jsonc .renovaterc.json5
+          default.json
+          | jq -Rnc '[inputs]')" >> "$GITHUB_OUTPUT"
+      - name: Validate Config
+        if: steps.files.outputs.files != ''
+        uses: suzuki-shunsuke/github-action-renovate-config-validator@v2.4.1
+        with:
+          strict: true
+          config_file_path: ${{ join(fromJSON(steps.files.outputs.files), ' ') }}
+
+  upstream:
+    name: Renovate Upstream
+    runs-on: ubuntu-latest
+    concurrency:
+      group: renovate-check-${{ github.ref }}
+    permissions:
+      contents: read # Read the Renovate configs
+    outputs:
+      missing: ${{ steps.upstream.outputs.missing }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Find Missing Upstream
+        id: upstream
+        # default.json is the upstream preset itself, so it only needs $schema
+        run: |
+          git ls-files -- \
+            renovate.json .github/renovate.json .gitlab/renovate.json \
+            .renovaterc .renovaterc.json default.json \
+          | while read -r file; do
+            jq -c --arg file "$file" --arg url "$SCHEMA_URL" --arg upstream "$UPSTREAM" '
+              [ (if .["$schema"] == $url then empty else "$schema" end),
+                (if $file == "default.json" or any(.extends[]?;
+                    sub("^local>"; "github>") | . == $upstream or startswith($upstream + "#"))
+                  then empty else "extends" end) ]
+              | select(length > 0) | {file: $file, missing: .}' "$file"
+          done \
+          | jq -sc . | sed 's/^/missing=/' >> "$GITHUB_OUTPUT"
+      - name: Fail on Missing Upstream
+        if: steps.upstream.outputs.missing != '[]'
+        env:
+          MISSING: ${{ steps.upstream.outputs.missing }}
+        run: |
+          jq -r --arg url "$SCHEMA_URL" --arg upstream "$UPSTREAM" '.[]
+            | "::error file=\(.file)::Missing " + (.missing | map(
+                if . == "$schema" then "\"$schema\": \"\($url)\""
+                else "\"\($upstream)\" in \"extends\"" end) | join(" and "))' <<< "$MISSING"
+          exit 1
+
+  suggest:
+    name: Suggest Renovate Upstream
+    # Suggests the fix on the pull request instead of committing it. The author applies it with
+    # "Commit suggestion", which GitHub signs as their commit and which, unlike a commit made with
+    # the GITHUB_TOKEN, starts the checks again. Fork pull requests get a read-only token, so they
+    # only see the failed check.
+    needs: upstream
+    if: >-
+      !cancelled() && needs.upstream.outputs.missing != '[]' && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    concurrency:
+      group: renovate-suggest-${{ github.ref }}
+    permissions:
+      contents: read # Read the Renovate configs
+      pull-requests: write # Post the suggestions
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Suggest Missing Upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISSING: ${{ needs.upstream.outputs.missing }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # A suggestion can only replace lines that are part of the pull request's diff. When one
+          # hunk covers the whole config (a new file, or a small one that was edited), the fix is a
+          # suggestion on the file. Otherwise it's a comment with the fixed file. Each comment
+          # carries a marker with a hash of the fix, so a later push doesn't post it again.
+          changed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | {filename, patch}' | jq -sc .)
+          posted=$( { gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" --jq '.[].body'
+                      gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --jq '.[].body'; } \
+                    | grep -o '<!-- renovate-upstream [^ ]* -->' || true)
+          code='`'
+          fence='```'
+          jq -c '.[]' <<< "$MISSING" | while read -r entry; do
+            file=$(jq -r '.file' <<< "$entry")
+            what=$(jq -r --arg upstream "$UPSTREAM" '.missing | map(
+              if . == "$schema" then "`$schema`" else "`\($upstream)` in `extends`" end) | join(" and ")' <<< "$entry")
+            fixed=$(jq --argjson entry "$entry" --arg url "$SCHEMA_URL" --arg upstream "$UPSTREAM" '
+              (if $entry.missing | any(. == "$schema") then {"$schema": $url} + del(.["$schema"]) else . end)
+              | (if $entry.missing | any(. == "extends") then .extends = [$upstream] + (.extends // []) else . end)
+            ' "$file")
+            marker="<!-- renovate-upstream $(sha256sum <<< "$file:$fixed" | cut -c1-16) -->"
+            if grep -qF "$marker" <<< "$posted"; then
+              echo "::notice file=$file::The fix for $file was already suggested"
+              continue
+            fi
+            lines=$(awk 'END { print NR }' "$file")
+            covered=$(jq -r --arg f "$file" '.[] | select(.filename == $f) | .patch // empty' <<< "$changed" \
+              | sed -nE 's/^@@ -[0-9,]+ \+([0-9]+)(,([0-9]+))? @@.*/\1 \3/p' \
+              | awk -v n="$lines" '{ len = ($2 == "" ? 1 : $2); if ($1 <= 1 && $1 + len - 1 >= n) ok = 1 } END { print ok + 0 }')
+            if (( covered )); then
+              body=$(printf '%s is missing %s. Apply the suggestion to fix it.\n\n%ssuggestion\n%s\n%s\n%s' \
+                "$code$file$code" "$what" "$fence" "$fixed" "$fence" "$marker")
+              jq -n --arg body "$body" --arg path "$file" --arg sha "$HEAD_SHA" --argjson lines "$lines" '
+                {body: $body, path: $path, commit_id: $sha, side: "RIGHT", line: $lines}
+                + (if $lines > 1 then {start_line: 1, start_side: "RIGHT"} else {} end)' \
+                | gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" --input - > /dev/null
+              echo "::notice file=$file::Suggested the fix for $file"
+            else
+              body=$(printf "%s is missing %s. It isn't changed in this pull request, so GitHub can't offer the fix as a suggestion. Replace its content with:\n\n%sjson\n%s\n%s\n%s" \
+                "$code$file$code" "$what" "$fence" "$fixed" "$fence" "$marker")
+              jq -n --arg body "$body" '{body: $body}' \
+                | gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --input - > /dev/null
+              echo "::notice file=$file::Posted the fix for $file as a comment"
+            fi
+          done
