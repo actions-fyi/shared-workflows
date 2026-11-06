@@ -1,0 +1,52 @@
+name: Audit
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the zizmor audit that used to be zizmor.yml of
+# actions-fyi/.github. Workflows in other repositories, ruleset workflows included, call it by full
+# path and tag, e.g. `uses: actions-fyi/shared-workflows/.github/workflows/_zizmor.yml@v1.0.0`: in
+# a ruleset workflow, GitHub resolves `$/` against the target repository, where this file doesn't
+# exist. This repository's own zizmor.yml calls it with `uses: $/.github/workflows/_zizmor.yml`.
+# It runs as part of the caller's run, in the target repository's context: the caller's event,
+# token and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# The calling job must grant what the zizmor job declares, or the call fails before anything runs:
+#   security-events: write  # upload the SARIF results to code scanning
+#   contents: read          # check out the repository
+#   actions: read           # let upload-sarif read the workflow run
+#
+# Known caveat: code scanning keys an analysis on the workflow path and the job, and those come
+# from the caller. When pull requests run through one caller (e.g. the org ruleset's) and pushes
+# to the default branch through another (e.g. the push caller from actions-fyi/.github), the two
+# analyses don't match, and pull requests can show "no analysis on the base branch". Where
+# possible, callers use the same file name, zizmor.yml, and the same job id, zizmor.
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  zizmor:
+    name: CI Config
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
+      contents: read         # Only needed for private repos. Needed to clone the repo.
+      actions: read          # Only needed for private repos. Needed for upload-sarif to read workflow run info.
+    concurrency:
+      group: zizmor-${{ github.ref }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run zizmor 🌈
+        uses: zizmorcore/zizmor-action@v0.8.1
+        with:
+          persona: pedantic
+          min-severity: low
+          min-confidence: medium
