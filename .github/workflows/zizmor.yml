@@ -1,0 +1,24 @@
+name: Audit
+# This repository's caller of its own shared workflow _zizmor.yml, which holds the audit; see there.
+# It calls the sibling with `$/`, so a pull request runs its own version of it. The org ruleset
+# doesn't run in this repository, so this caller covers its pull requests and merge groups too.
+#
+# Pull requests and pushes to main run through this one file and job id, zizmor, so code scanning
+# compares a pull request's analysis with the base branch's.
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  zizmor:
+    name: zizmor
+    # What the zizmor job of _zizmor.yml declares; a called job can't get more.
+    permissions:
+      security-events: write # Upload the SARIF results to code scanning
+      contents: read # Check out the repository
+      actions: read # Let upload-sarif read the workflow run
+    uses: $/.github/workflows/_zizmor.yml

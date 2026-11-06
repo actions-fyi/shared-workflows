@@ -1,0 +1,21 @@
+name: Validate
+# This repository's caller of its own shared workflow _renovate.yml, which holds the checks; see
+# there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
+# ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups
+# too.
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  renovate:
+    name: Renovate
+    # The union of what the jobs of _renovate.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read the Renovate configs
+      pull-requests: write # Review permission, and post the suggestions on pull requests
+    uses: $/.github/workflows/_renovate.yml
