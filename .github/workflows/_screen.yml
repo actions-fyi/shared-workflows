@@ -145,6 +145,9 @@ jobs:
           # The caller decides whose pull requests get this far; with no tools and no write
           # access, the screen itself admits any bot that starts the run.
           allowed_bots: "*"
+          # Likewise any person: under workflow_run, the action also checks the actor of the
+          # triggering run, such as the author of a fork pull request, who has no write access.
+          allowed_non_write_users: "*"
           claude_args: >-
             --model haiku
             --max-turns 3
