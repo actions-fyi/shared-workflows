@@ -265,17 +265,17 @@ secrets, required permissions or behaviour is a new major version.
 ## Octo STS
 
 The fix job of `_actions-lock.yml` commits with a short-lived token from
-[Octo STS](https://github.com/octo-sts), granted by org-level trust policies in
-`.github/chainguard/` of `actions-fyi/.github`. The token's `job_workflow_ref` names this file, not
-the caller:
+[Octo STS](https://github.com/octo-sts), granted by the org-level trust policy
+`.github/chainguard/actions-lock.sts.yaml` of `actions-fyi/.github` (identity `actions-lock`). The
+token's `job_workflow_ref` names this file, not the caller:
 
 | Where | `job_workflow_ref` | Identity |
 | --- | --- | --- |
 | Consumers | `actions-fyi/shared-workflows/.github/workflows/_actions-lock.yml@refs/tags/vX.Y.Z` | `actions-lock` |
-| This repository's pull requests | `actions-fyi/shared-workflows/.github/workflows/_actions-lock.yml@refs/pull/<n>/merge` | `actions-lock.shared` |
 
-The policies must accept these refs **before** a consumer switches to the shared workflow, or the
-fix job gets no token and only reports the failure.
+The policy must accept these refs **before** a consumer switches to the shared workflow, or the fix
+job gets no token and only reports the failure. This repository's pull requests run their own copy,
+at `refs/pull/<n>/merge`, which the policy doesn't accept, so their fix job gets no token.
 
 A consumer that pins this repository by commit SHA instead of tag gets `@<sha>` as its
 `job_workflow_ref`, which the tag policy doesn't accept. Reference releases by tag; the releases are
