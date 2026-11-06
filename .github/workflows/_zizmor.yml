@@ -2,9 +2,9 @@ name: Audit
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags, and holds the zizmor audit that used to be zizmor.yml of
 # actions-fyi/.github. Workflows in other repositories, ruleset workflows included, call it by full
-# path and tag, e.g. `uses: actions-fyi/shared-workflows/.github/workflows/_zizmor.yml@v1.0.0`: in
-# a ruleset workflow, GitHub resolves `$/` against the target repository, where this file doesn't
-# exist. This repository's own zizmor.yml calls it with `uses: $/.github/workflows/_zizmor.yml`.
+# path and tag: in a ruleset workflow, GitHub resolves `$/` against the target repository, where
+# this file doesn't exist. This repository's own zizmor.yml calls it with
+# `uses: $/.github/workflows/_zizmor.yml`.
 # It runs as part of the caller's run, in the target repository's context: the caller's event,
 # token and secrets.
 #

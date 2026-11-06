@@ -4,9 +4,8 @@ name: Screen Text
 # (introduced in actions-fyi/ruleset-workflows#13). It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags. Shared workflows in this repository call it as their sibling
 # with `uses: $/.github/workflows/_screen.yml`; workflows in other repositories, ruleset workflows
-# included, call it by full path and tag, e.g.
-# `uses: actions-fyi/shared-workflows/.github/workflows/_screen.yml@v1.0.0`, because in a ruleset
-# workflow, GitHub resolves `$/` against the target repository, where this file doesn't exist.
+# included, call it by full path and tag, because in a ruleset workflow, GitHub resolves `$/`
+# against the target repository, where this file doesn't exist.
 #
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
