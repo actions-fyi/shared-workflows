@@ -3,16 +3,16 @@ name: Test
 # any event. The top-level ones have callers of their own in this repository (actions-lock.yml,
 # zizmor.yml, renovate.yml), so their pull requests already run them.
 #
-# A job that calls a reusable workflow can't continue on error, so a call that must fail shows as a
-# failed job in the run:
+# Every call must pass:
 # - Screen calls _screen.yml with a harmless text, which must pass both the deterministic check and
 #   Claude Haiku's verdict.
 # - Screen Blocks Token, Screen Blocks Token (base64) and Screen Blocks Credential call _screen.yml
 #   with a text that must be blocked: a dummy token, passed in as the secret, raw and
 #   base64-encoded, and a GitHub token shape. Prepare Screen builds these at run time, so no
-#   secret-shaped string sits in the repository. These jobs are expected to show as failed.
-# - Screen Verdicts fails unless Screen succeeded and every blocking call failed. It is the job to
-#   make required, not the calls it checks.
+#   secret-shaped string sits in the repository. They pass expect-block, so they pass when the
+#   text is blocked.
+# - Screen Verdicts fails unless every call succeeded. It is the job to make required, not the
+#   calls it checks.
 #
 # Pull requests from this repository only: fork pull requests get no secrets, so every job skips
 # on them, and a skipped Screen Verdicts counts as passed.
@@ -86,6 +86,7 @@ jobs:
     with:
       text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.token }}"
       context: A test text from this repository's own test workflow, which must be blocked.
+      expect-block: true
 
   screen-block-token-base64:
     name: Screen Blocks Token (base64)
@@ -98,6 +99,7 @@ jobs:
     with:
       text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.token-base64 }}"
       context: A test text from this repository's own test workflow, which must be blocked.
+      expect-block: true
 
   screen-block-credential:
     name: Screen Blocks Credential
@@ -110,6 +112,7 @@ jobs:
     with:
       text: "Test of _screen.yml, which must block this: gh${{ needs.screen-inputs.outputs.credential-suffix }}"
       context: A test text from this repository's own test workflow, which must be blocked.
+      expect-block: true
 
   screen-verdicts:
     name: Screen Verdicts
@@ -137,7 +140,7 @@ jobs:
             fi
           }
           expect "Screen" success "$CLEAN"
-          expect "Screen Blocks Token" failure "$TOKEN"
-          expect "Screen Blocks Token (base64)" failure "$TOKEN_BASE64"
-          expect "Screen Blocks Credential" failure "$CREDENTIAL"
+          expect "Screen Blocks Token" success "$TOKEN"
+          expect "Screen Blocks Token (base64)" success "$TOKEN_BASE64"
+          expect "Screen Blocks Credential" success "$CREDENTIAL"
           exit "$status"
