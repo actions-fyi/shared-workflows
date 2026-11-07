@@ -23,6 +23,9 @@ name: Screen Text
 #   no free text, so an injection can't carry anything out through it either.
 #
 # Neither check prints the text or what matched, only which check failed.
+#
+# expect-block is for this repository's test.yml only: it inverts the result, so a call with a
+# text that must be blocked passes when it is, and fails when the text gets through.
 on:
   workflow_call:
     inputs:
@@ -36,6 +39,11 @@ on:
           so the screener doesn't block them.
         type: string
         required: true
+      expect-block:
+        description: >-
+          For test.yml only: pass when the text is blocked, and fail when it is judged clean.
+        type: boolean
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -63,9 +71,11 @@ jobs:
       # text. A token embedded in a longer string is base64-encoded from one of three byte
       # offsets, so each offset's aligned encoding is searched for.
       - name: Check for Secrets
+        id: secrets
         uses: actions/github-script@v9.0.0
         env:
           TEXT: ${{ inputs.text }}
+          EXPECT_BLOCK: ${{ inputs.expect-block }}
           SECRET: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:
           script: |
@@ -125,11 +135,17 @@ jobs:
               if (pattern.test(text) || pattern.test(compact)) fail(check);
             }
 
-            for (const message of failed) core.setFailed(message);
+            if (failed.length > 0 && process.env.EXPECT_BLOCK === 'true') {
+              for (const message of failed) core.notice(`${message} Blocked as expected.`);
+              core.setOutput('blocked', 'true');
+            } else {
+              for (const message of failed) core.setFailed(message);
+            }
       # The default branch, never the pull request's head: on pull requests, claude-code-action
       # needs a Git working tree to restore its configuration from the base branch, and Claude
       # Code loads CLAUDE.md and .claude/ from it.
       - name: Checkout Default Branch
+        if: steps.secrets.outputs.blocked != 'true'
         uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -137,6 +153,7 @@ jobs:
           persist-credentials: false
       - name: Screen Text
         id: claude
+        if: steps.secrets.outputs.blocked != 'true'
         uses: step-security/claude-code-action@v1.0.238
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -188,10 +205,20 @@ jobs:
       # Parsed in the script rather than with fromJSON, and fails closed: a missing or
       # unparseable answer blocks the text too. Only names from the fixed list are printed.
       - name: Check Verdict
+        if: steps.secrets.outputs.blocked != 'true'
         env:
           OUTPUT: ${{ steps.claude.outputs.structured_output }}
+          EXPECT_BLOCK: ${{ inputs.expect-block }}
         run: |
           verdict=$(jq -r '.verdict // ""' <<< "$OUTPUT" 2> /dev/null || true)
+          if [[ "$EXPECT_BLOCK" == true ]]; then
+            if [[ "$verdict" == block ]]; then
+              echo "::notice::The screen blocked the text, as expected."
+              exit 0
+            fi
+            echo "::error::The screen returned ${verdict:-no verdict} for a text it must block."
+            exit 1
+          fi
           if [[ "$verdict" == clean ]]; then
             echo "::notice::The screen found nothing to block."
             exit 0

@@ -3,25 +3,24 @@ name: Test
 # any event. The top-level ones have callers of their own in this repository (actions-lock.yml,
 # zizmor.yml, renovate.yml), so their pull requests already run them.
 #
-# A job that calls a reusable workflow can't continue on error, so a call that must fail shows as a
-# failed job in the run:
+# Every call must pass:
 # - Screen calls _screen.yml with a harmless text, which must pass both the deterministic check and
 #   Claude Haiku's verdict.
 # - Screen Blocks Token, Screen Blocks Token (base64) and Screen Blocks Credential call _screen.yml
 #   with a text that must be blocked: a dummy token, passed in as the secret, raw and
 #   base64-encoded, and a GitHub token shape. Prepare Screen builds these at run time, so no
-#   secret-shaped string sits in the repository. These jobs are expected to show as failed.
-# - Screen Verdicts fails unless Screen succeeded and every blocking call failed. It is the job to
-#   make required, not the calls it checks.
+#   secret-shaped string sits in the repository. They pass expect-block, so they pass when the
+#   text is blocked.
+# - Screen Verdicts fails unless every call succeeded. It is the job to make required, not the
+#   calls it checks.
 #
-# Merge queue only: the queue branch belongs to this repository, so the jobs always get the
-# secrets, and fork pull requests never run it.
+# Pull requests from this repository only: fork pull requests get no secrets, so every job skips
+# on them, and a skipped Screen Verdicts counts as passed.
 on:
-  merge_group:
+  pull_request:
 
 permissions: {}
 
-# Each merge group entry has its own ref, so merge groups never share a group.
 concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
@@ -33,6 +32,7 @@ defaults:
 jobs:
   screen:
     name: Screen
+    if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read # Check out the default branch, which claude-code-action needs on pull requests
     uses: $/.github/workflows/_screen.yml
@@ -50,12 +50,13 @@ jobs:
 
   screen-inputs:
     name: Prepare Screen
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions: {} # None: only writes job outputs
     outputs:
       token: ${{ steps.values.outputs.token }}
       token-base64: ${{ steps.values.outputs.token-base64 }}
-      credential: ${{ steps.values.outputs.credential }}
+      credential-suffix: ${{ steps.values.outputs.credential-suffix }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.3
@@ -65,12 +66,13 @@ jobs:
         id: values
         run: |
           token=dummy-screen-test-token-0123456789
-          credential="gh"
-          credential+="p_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          # Only the part after gh: GitHub drops a job output that looks like a token, so the
+          # call builds the whole credential in its input.
+          credential_suffix="p_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           {
             echo "token=$token"
             echo "token-base64=$(printf '%s' "$token" | base64 -w0)"
-            echo "credential=$credential"
+            echo "credential-suffix=$credential_suffix"
           } >> "$GITHUB_OUTPUT"
 
   screen-block-token:
@@ -84,6 +86,7 @@ jobs:
     with:
       text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.token }}"
       context: A test text from this repository's own test workflow, which must be blocked.
+      expect-block: true
 
   screen-block-token-base64:
     name: Screen Blocks Token (base64)
@@ -96,6 +99,7 @@ jobs:
     with:
       text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.token-base64 }}"
       context: A test text from this repository's own test workflow, which must be blocked.
+      expect-block: true
 
   screen-block-credential:
     name: Screen Blocks Credential
@@ -106,12 +110,13 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.screen-inputs.outputs.token }}
     with:
-      text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.credential }}"
+      text: "Test of _screen.yml, which must block this: gh${{ needs.screen-inputs.outputs.credential-suffix }}"
       context: A test text from this repository's own test workflow, which must be blocked.
+      expect-block: true
 
   screen-verdicts:
     name: Screen Verdicts
-    if: always()
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
     needs: [screen, screen-block-token, screen-block-token-base64, screen-block-credential]
     runs-on: ubuntu-latest
     permissions: {} # None: only reads the results of the calls
@@ -135,7 +140,7 @@ jobs:
             fi
           }
           expect "Screen" success "$CLEAN"
-          expect "Screen Blocks Token" failure "$TOKEN"
-          expect "Screen Blocks Token (base64)" failure "$TOKEN_BASE64"
-          expect "Screen Blocks Credential" failure "$CREDENTIAL"
+          expect "Screen Blocks Token" success "$TOKEN"
+          expect "Screen Blocks Token (base64)" success "$TOKEN_BASE64"
+          expect "Screen Blocks Credential" success "$CREDENTIAL"
           exit "$status"
