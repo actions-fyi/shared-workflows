@@ -12,7 +12,7 @@ jobs:
       id-token: write
       pull-requests: write
       issues: write
-    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@37d3d5dd3a96fcb66980b49312e6f79d1d31eb0e # v0.1.0
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.1.0
     secrets: inherit
     with:
       dry-run: true
