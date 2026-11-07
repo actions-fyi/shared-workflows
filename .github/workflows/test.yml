@@ -14,14 +14,13 @@ name: Test
 # - Screen Verdicts fails unless Screen succeeded and every blocking call failed. It is the job to
 #   make required, not the calls it checks.
 #
-# Merge queue only: the queue branch belongs to this repository, so the jobs always get the
-# secrets, and fork pull requests never run it.
+# Pull requests from this repository only: fork pull requests get no secrets, so every job skips
+# on them, and a skipped Screen Verdicts counts as passed.
 on:
-  merge_group:
+  pull_request:
 
 permissions: {}
 
-# Each merge group entry has its own ref, so merge groups never share a group.
 concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
@@ -33,6 +32,7 @@ defaults:
 jobs:
   screen:
     name: Screen
+    if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read # Check out the default branch, which claude-code-action needs on pull requests
     uses: $/.github/workflows/_screen.yml
@@ -50,6 +50,7 @@ jobs:
 
   screen-inputs:
     name: Prepare Screen
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions: {} # None: only writes job outputs
     outputs:
@@ -111,7 +112,7 @@ jobs:
 
   screen-verdicts:
     name: Screen Verdicts
-    if: always()
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
     needs: [screen, screen-block-token, screen-block-token-base64, screen-block-credential]
     runs-on: ubuntu-latest
     permissions: {} # None: only reads the results of the calls
