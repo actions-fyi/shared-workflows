@@ -2,19 +2,33 @@ name: Triage
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows and holds
 # the issue triage that used to be auto-label.yml of actions-fyi/.github. It runs as part of the
 # caller's run, in the target repository's context: the caller's event, token and secrets. The
-# caller runs it on opened issues and passes CLAUDE_CODE_OAUTH_TOKEN.
+# caller runs it on opened issues and passes CLAUDE_CODE_OAUTH_TOKEN, and the Prompt Guard secrets
+# PROMPT_GUARD_CLIENT_ID, CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET.
+#
+# Anyone can open an issue, so the guard job screens its title and body with Prompt Guard before
+# Haiku reads them, and Haiku only classifies a text Prompt Guard judged clean. Prompt Guard is
+# called by tag: its OpenBao role binds the job_workflow_ref claim to refs/tags/v*, which a commit
+# SHA doesn't match.
 #
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   contents: read  # classify: check out the default branch
-#   issues: write   # classify: read the repository's labels; apply: label issues
+#   contents: read       # classify: check out the default branch
+#   id-token: write      # guard: log in to OpenBao
+#   issues: write        # guard: escalate a flagged issue; classify: read the labels; apply: label issues
+#   pull-requests: write # guard: declared by Prompt Guard's shared workflow, unused on issues
 on:
   workflow_call:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      PROMPT_GUARD_CLIENT_ID:
+        required: false
+      CF_ACCESS_CLIENT_ID:
+        required: false
+      CF_ACCESS_CLIENT_SECRET:
+        required: false
 
 permissions: {}
 
@@ -23,9 +37,27 @@ defaults:
     shell: bash
 
 jobs:
+  guard:
+    name: Guard
+    if: github.event_name == 'issues' && github.event.issue.user.type != 'Bot'
+    permissions:
+      id-token: write # Log in to OpenBao
+      issues: write # Escalate a flagged issue
+      pull-requests: write # Declared by the shared workflow, unused on issues
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.1.0
+    secrets:
+      PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+    with:
+      # The same payload fields the prompt below reads. An issue without a body has a null one.
+      payload-fields: issue.title, issue.body
+
   classify:
     name: Classify
-    if: github.event_name == 'issues' && github.event.issue.user.type != 'Bot'
+    needs: guard
+    # Only a text Prompt Guard judged clean. A flag or an error leaves the issue unlabeled.
+    if: needs.guard.outputs.verdict == 'clean'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
