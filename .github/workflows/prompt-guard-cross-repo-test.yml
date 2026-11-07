@@ -1,0 +1,20 @@
+name: Prompt Guard Cross-Repo Test
+on:
+  push:
+    branches: [claude/prompt-guard-cross-repo-test]
+
+permissions: {}
+
+jobs:
+  guard:
+    name: Prompt Guard
+    permissions:
+      id-token: write
+      pull-requests: write
+      issues: write
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@37d3d5dd3a96fcb66980b49312e6f79d1d31eb0e # v0.1.0
+    secrets: inherit
+    with:
+      dry-run: true
+      mode: audit
+      payload-fields: head_commit.message
