@@ -56,7 +56,7 @@ jobs:
     outputs:
       token: ${{ steps.values.outputs.token }}
       token-base64: ${{ steps.values.outputs.token-base64 }}
-      credential: ${{ steps.values.outputs.credential }}
+      credential-suffix: ${{ steps.values.outputs.credential-suffix }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.3
@@ -66,12 +66,13 @@ jobs:
         id: values
         run: |
           token=dummy-screen-test-token-0123456789
-          credential="gh"
-          credential+="p_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          # Only the part after gh: GitHub drops a job output that looks like a token, so the
+          # call builds the whole credential in its input.
+          credential_suffix="p_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           {
             echo "token=$token"
             echo "token-base64=$(printf '%s' "$token" | base64 -w0)"
-            echo "credential=$credential"
+            echo "credential-suffix=$credential_suffix"
           } >> "$GITHUB_OUTPUT"
 
   screen-block-token:
@@ -107,7 +108,7 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.screen-inputs.outputs.token }}
     with:
-      text: "Test of _screen.yml, which must block this: ${{ needs.screen-inputs.outputs.credential }}"
+      text: "Test of _screen.yml, which must block this: gh${{ needs.screen-inputs.outputs.credential-suffix }}"
       context: A test text from this repository's own test workflow, which must be blocked.
 
   screen-verdicts:
