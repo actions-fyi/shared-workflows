@@ -41,6 +41,7 @@ workflows:
         - 'step-security/harden-runner@v2.22.3'
         - 'zizmorcore/zizmor-action@v0.8.1'
     '.github/workflows/actions-lock.yml': []
+    '.github/workflows/prompt-guard-cross-repo-test.yml': []
     '.github/workflows/renovate.yml': []
     '.github/workflows/test.yml':
         - 'step-security/harden-runner@v2.22.3'
