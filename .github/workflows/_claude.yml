@@ -1,0 +1,92 @@
+name: Claude
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows and holds
+# the @claude mention handling that used to be claude.yml of actions-fyi/.github. It runs as part
+# of the caller's run, in the target repository's context: the caller's event, token and secrets.
+# The caller runs it on issue_comment, pull_request_review_comment, issues and
+# pull_request_review, and passes CLAUDE_CODE_OAUTH_TOKEN.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   actions: read        # claude: read CI results on pull requests
+#   contents: read       # claude: check out the repository
+#   id-token: write      # claude: sign in to the Claude GitHub App
+#   issues: write        # claude: comment on issues
+#   pull-requests: write # claude: comment on and open pull requests
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  claude:
+    name: Claude
+    # Only @claude mentions from the owner, members and collaborators start a run. The action
+    # additionally checks that the author has write access before Claude does anything.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+    permissions:
+      contents: read # Restrict repository contents to read-only to reduce high-impact agency risk
+      pull-requests: write # Let Claude comment on and open pull requests
+      issues: write # Let Claude comment on issues
+      id-token: write # Sign in to the Claude GitHub App
+      actions: read # Let Claude read CI results on pull requests
+    env:
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check Claude Token
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          EXPIRES_AT: ${{ vars.CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT }}
+        run: |
+          # Fails with a clear message instead of letting the action fail on a missing or expired
+          # token. The expiry date is a variable, because a secret's value can't be inspected.
+          renew="Run claude setup-token, then update the CLAUDE_CODE_OAUTH_TOKEN secret and the CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT variable."
+          if [[ "$HAS_TOKEN" != true ]]; then
+            echo "::error::The CLAUDE_CODE_OAUTH_TOKEN secret isn't available to this repository. Add it, or give this repository access to the organization secret."
+            exit 1
+          fi
+          if [[ -z "$EXPIRES_AT" ]]; then
+            echo "::warning::The CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT variable isn't set, so the token's expiry can't be checked"
+            exit 0
+          fi
+          expires=$(date -ud "$EXPIRES_AT" +%s) \
+            || { echo "::error::CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT isn't a valid date: $EXPIRES_AT"; exit 1; }
+          days=$(( (expires - $(date -u +%s)) / 86400 ))
+          if (( days < 0 )); then
+            echo "::error::The Claude token expired on $EXPIRES_AT. $renew"
+            exit 1
+          elif (( days < 30 )); then
+            echo "::warning::The Claude token expires on $EXPIRES_AT (in $days days). $renew"
+          fi
+      - name: Run Claude
+        uses: step-security/claude-code-action@v1.0.238
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
