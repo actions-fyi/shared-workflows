@@ -9,9 +9,16 @@ name: Explain Actions Lockfile
 #
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
-# When that run failed on a pull request, Claude Haiku explains its findings to the author in one
-# comment, which later runs update. When its fix job committed a fix, the fix commit's own run
-# checks the result, so nothing is explained.
+# It owns the report of that check, on pull requests and on the default branch:
+# - A failure is reported: on a pull request as one comment, which later failures update and
+#   unminimize; on the default branch (a push run) as one issue, or a comment on the issue that is
+#   still open. Claude Haiku explains the findings; without an explanation that passed the screen,
+#   the report is a fixed text that points at the run, so a failure is always reported.
+# - A pass resolves the report: the pull request's comment is minimized as resolved, and the
+#   default branch's issue gets a comment and is closed.
+# - When the fix job committed a fix, the fix commit's own run checks the result and reports or
+#   resolves, so this run does nothing. Merge groups and other events are neither.
+# The hidden marker finds the comment and the issue; only what github-actions[bot] created counts.
 #
 # Under pull_request, fork pull requests get no secrets and a read-only token, so this can't run
 # there. Under workflow_run it gets both, for fork pull requests too, which makes the run's logs
@@ -25,9 +32,10 @@ name: Explain Actions Lockfile
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   actions: read         # fetch: read the run's jobs and download their logs
+#   actions: read         # resolve: read the run's jobs; fetch: download their logs
 #   contents: read        # screen: check out the default branch
-#   pull-requests: write  # resolve: find the pull request; post: create or update the comment
+#   issues: write         # report, resolve-report: open, comment on and close the issue
+#   pull-requests: write  # resolve: find the pull request; report, resolve-report: the comment
 # and pass the CLAUDE_CODE_OAUTH_TOKEN secret.
 on:
   workflow_call:
@@ -45,8 +53,8 @@ env:
   # The logs Claude reads, collected fresh by the explain job.
   CONTEXT_DIR: .explain
   CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
-  # Identifies the one comment per pull request; the marker of the earlier comments, so they keep
-  # being updated.
+  # Identifies the one comment per pull request and the one issue on the default branch; the
+  # marker of the earlier comments, so they keep being updated.
   MARKER: "<!-- actions-lock-explanation -->"
 
 defaults:
@@ -54,17 +62,28 @@ defaults:
     shell: bash
 
 jobs:
+  # Decides what this run does: mode report or resolve, on a pull request or the default branch.
   resolve:
-    name: Find Pull Request
-    # Merge groups and pushes have no pull request to comment on, and a passed check needs nothing.
+    name: Find Report
     if: >-
-      github.event.workflow_run.event == 'pull_request'
-      && github.event.workflow_run.conclusion != 'success'
+      contains(fromJSON('["success","failure"]'), github.event.workflow_run.conclusion)
+      && (
+        github.event.workflow_run.event == 'pull_request'
+        || (
+          github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_branch == github.event.repository.default_branch
+        )
+      )
     runs-on: ubuntu-latest
     permissions:
+      actions: read # Read the run's jobs
       pull-requests: read # Find the pull request
     outputs:
+      mode: ${{ steps.resolve.outputs.mode }}
+      # The pull request's number, or empty on the default branch.
       number: ${{ steps.resolve.outputs.number }}
+      # Keeps the jobs of one pull request, or of the default branch, in order.
+      key: ${{ steps.resolve.outputs.key }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.3
@@ -74,13 +93,30 @@ jobs:
       # its head. A head SHA alone can match several pull requests, so the head repository and
       # branch must match too, and anything but exactly one match does nothing rather than comment
       # on the wrong pull request. A newer push no longer matches, and its own run takes over.
-      - name: Find Pull Request
+      - name: Find Report
         id: resolve
         uses: actions/github-script@v9.0.0
         with:
           script: |
             const run = context.payload.workflow_run;
             const { owner, repo } = context.repo;
+            const failed = run.conclusion === 'failure';
+
+            if (failed) {
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+                owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
+              });
+              if (jobs.some((j) => j.name.endsWith(process.env.FIX_JOB) && j.conclusion === 'success')) {
+                core.notice('The fix job committed a fix, whose own run checks the result, so nothing is done.');
+                return;
+              }
+            }
+
+            if (run.event === 'push') {
+              core.setOutput('mode', failed ? 'report' : 'resolve');
+              core.setOutput('key', 'default-branch');
+              return;
+            }
 
             const pulls = await github.paginate(github.rest.pulls.list, {
               owner, repo, state: 'open', per_page: 100,
@@ -94,19 +130,21 @@ jobs:
               return;
             }
             const pr = matches[0];
-            if (pr.user.type === 'Bot') {
-              core.notice(`#${pr.number} was opened by a bot, so it isn't explained.`);
+            if (failed && pr.user.type === 'Bot') {
+              core.notice(`#${pr.number} was opened by a bot, so its failure isn't reported.`);
               return;
             }
+            core.setOutput('mode', failed ? 'report' : 'resolve');
             core.setOutput('number', String(pr.number));
+            core.setOutput('key', `pr-${pr.number}`);
 
   fetch:
     name: Fetch Failed Logs
     needs: resolve
-    if: needs.resolve.outputs.number != ''
+    if: needs.resolve.outputs.mode == 'report'
     runs-on: ubuntu-latest
     concurrency:
-      group: explain-actions-lock-${{ needs.resolve.outputs.number }}
+      group: explain-actions-lock-${{ needs.resolve.outputs.key }}
       cancel-in-progress: true
     permissions:
       actions: read # List the run's jobs and download their logs
@@ -130,10 +168,6 @@ jobs:
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
               owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
             });
-            if (jobs.some((j) => j.name.endsWith(process.env.FIX_JOB) && j.conclusion === 'success')) {
-              core.notice('The fix job committed a fix, whose own run checks the result, so nothing is explained.');
-              return;
-            }
             const failed = jobs.filter((j) => j.conclusion === 'failure');
             if (failed.length === 0) {
               core.notice('No job of the run failed, so nothing is explained.');
@@ -171,7 +205,7 @@ jobs:
     if: needs.fetch.outputs.logs != ''
     runs-on: ubuntu-latest
     concurrency:
-      group: explain-actions-lock-${{ needs.resolve.outputs.number }}
+      group: explain-actions-lock-${{ needs.resolve.outputs.key }}
       cancel-in-progress: true
     permissions: {} # None: Claude reads only the fetched logs
     outputs:
@@ -191,7 +225,7 @@ jobs:
         run: |
           mkdir -p "$CONTEXT_DIR"
           printf '%s\n' "$LOGS" > "$CONTEXT_DIR/failed-jobs.log"
-      # Read-only: Claude returns the explanation as structured output, and the post job posts it
+      # Read-only: Claude returns the explanation as structured output, and the report job posts it
       # once the screen passed.
       - name: Write Explanation
         id: claude
@@ -206,21 +240,21 @@ jobs:
           allowed_bots: "*"
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ needs.resolve.outputs.number }}
+            ${{ needs.resolve.outputs.number && format('PR NUMBER: {0}', needs.resolve.outputs.number) || 'BRANCH: the default branch' }}
 
-            The GitHub Actions lockfile check (gh actions-lock) failed on this pull request, and
-            no fix was committed automatically. ${{ env.CONTEXT_DIR }}/failed-jobs.log holds the
-            end of the log of each failed job, each under a line with the job's name. The check
-            job runs `gh actions-lock --verify`; the fix job, if it ran, runs `gh actions-lock`
-            and then tries to commit the result.
+            The GitHub Actions lockfile check (gh actions-lock) failed ${{ needs.resolve.outputs.number && 'on this pull request' || 'after a push to the default branch' }},
+            and no fix was committed automatically. ${{ env.CONTEXT_DIR }}/failed-jobs.log holds
+            the end of the log of each failed job, each under a line with the job's name. The
+            check job runs `gh actions-lock --verify`; the fix job, if it ran, runs
+            `gh actions-lock` and then tries to commit the result.
 
-            Write a short PR comment in GitHub Markdown for the PR author as the body, and a
-            one-line summary as the title:
+            Write a short ${{ needs.resolve.outputs.number && 'PR comment for the PR author' || 'issue for the maintainers' }}
+            in GitHub Markdown as the body, and a one-line summary as the title:
             - What was wrong, per finding: which workflow, which action, and why it failed.
             - If the fix job failed, why the fix wasn't committed.
-            - What the author has to do. Out-of-date entries are fixed by running
+            - What has to be done. Out-of-date entries are fixed by running
               `gh actions-lock` and pushing the result. For a moved tag or an unreachable pin,
-              the author must inspect the upstream repository before running
+              the upstream repository must be inspected before running
               `gh actions-lock --relock`. Never suggest editing actions.lock by hand, deleting
               it, or using --accept-moved without that inspection.
             No preamble, headings only if needed, no praise.
@@ -269,7 +303,7 @@ jobs:
     name: Screen Explanation
     needs: [resolve, explain]
     concurrency:
-      group: explain-actions-lock-${{ needs.resolve.outputs.number }}
+      group: explain-actions-lock-${{ needs.resolve.outputs.key }}
       cancel-in-progress: true
     permissions:
       contents: read # Check out the default branch, which claude-code-action needs on pull requests
@@ -282,42 +316,166 @@ jobs:
 
         ${{ needs.explain.outputs.body }}
       context: |
-        An explanation, written by Claude for the author, of why the GitHub Actions lockfile check
-        (gh actions-lock) failed on a pull request: a one-line title, then a body in GitHub
-        Markdown. It may name workflow files, actions and their versions, repository paths, commit
-        SHAs (40 hex characters), log lines, and the commands the author should run. It may also
+        An explanation, written by Claude, of why the GitHub Actions lockfile check
+        (gh actions-lock) failed on a pull request or on the default branch: a one-line title,
+        then a body in GitHub Markdown. It may name workflow files, actions and their versions,
+        repository paths, commit SHAs (40 hex characters), log lines, and the commands to run. It may also
         quote actions.lock entries: action refs, commits written as sha1- followed by 40 hex
         characters, and numeric owner_id and repo_id values.
 
-  # Runs no agent, and only after the screen passed.
-  post:
-    name: Post Explanation
-    needs: [resolve, explain, screen]
+  # Runs no agent. Posts Claude's explanation only when the screen passed, and a fixed text that
+  # points at the run otherwise, so a failure is always reported.
+  report:
+    name: Report Failure
+    needs: [resolve, fetch, explain, screen]
+    if: always() && !cancelled() && needs.resolve.outputs.mode == 'report'
     runs-on: ubuntu-latest
+    # Queued, not cancelled, and shared with resolve-report: two quick runs never both create a
+    # comment or an issue.
     concurrency:
-      group: explain-actions-lock-${{ needs.resolve.outputs.number }}
-      cancel-in-progress: true
+      group: explain-actions-lock-report-${{ needs.resolve.outputs.key }}
     permissions:
-      pull-requests: write # Create or update the explanation comment
+      issues: write # Open the issue, or comment on the open one
+      pull-requests: write # Create, update and unminimize the comment
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.3
         with:
           egress-policy: audit
-      # One comment per pull request, found by the hidden marker and updated by later runs.
-      - name: Post Explanation
+      # Claude's text comes in through env only when it was screened, and the script never prints
+      # it.
+      - name: Post Report
+        uses: actions/github-script@v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ needs.resolve.outputs.number }}
-          BODY: ${{ needs.explain.outputs.body }}
-        run: |
-          body="$RUNNER_TEMP/comment.md"
-          printf '%s\n\n%s\n' "$BODY" "$MARKER" > "$body"
-          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains(env.MARKER))) | .id' \
-            | tail -n 1)
-          if [[ -n "$id" ]]; then
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F "body=@$body" --silent
-          else
-            gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F "body=@$body" --silent
-          fi
+          NUMBER: ${{ needs.resolve.outputs.number }}
+          SCREENED: ${{ needs.explain.result == 'success' && needs.screen.result == 'success' }}
+          TITLE: ${{ needs.explain.result == 'success' && needs.screen.result == 'success' && needs.explain.outputs.title || '' }}
+          BODY: ${{ needs.explain.result == 'success' && needs.screen.result == 'success' && needs.explain.outputs.body || '' }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const env = process.env;
+            const run = context.payload.workflow_run;
+            const marker = env.MARKER;
+            const bot = 'github-actions[bot]';
+            const number = Number(env.NUMBER) || 0;
+            const ours = (item) => item.user?.login === bot && (item.body ?? '').includes(marker);
+
+            let title = (env.TITLE ?? '').split('\n')[0].trim();
+            let text = (env.BODY ?? '').trim();
+            const explained = env.SCREENED === 'true' && title !== '' && text !== '';
+            if (!explained) {
+              title = `${run.name} failed on ${run.head_branch}`;
+              text = 'No explanation is available: it failed, or the screen blocked it. See the failed run for the details.';
+            }
+            const body = `**${title}**\n\n${text}\n\n---\nFailed run: ${run.html_url} at ${run.head_sha.slice(0, 7)}\n\n${marker}\n`;
+
+            if (number) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: number, per_page: 100,
+              });
+              const comment = comments.filter(ours).pop();
+              if (!comment) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+                core.notice(`Reported the failure on #${number}.`);
+                return;
+              }
+              await github.rest.issues.updateComment({ owner, repo, comment_id: comment.id, body });
+              const { node } = await github.graphql(
+                'query($id: ID!) { node(id: $id) { ... on IssueComment { isMinimized } } }',
+                { id: comment.node_id },
+              );
+              if (node?.isMinimized) {
+                await github.graphql(
+                  'mutation($id: ID!) { unminimizeComment(input: {subjectId: $id}) { unminimizedComment { isMinimized } } }',
+                  { id: comment.node_id },
+                );
+              }
+              core.notice(`Updated the report on #${number}.`);
+              return;
+            }
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', creator: bot, per_page: 100,
+            });
+            const issue = issues.find((i) => !i.pull_request && ours(i));
+            if (issue) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body });
+              core.notice(`Reported the failure on the open issue #${issue.number}.`);
+              return;
+            }
+            let issueTitle = explained ? `${run.name}: ${title}` : title;
+            if (issueTitle.length > 120) issueTitle = `${issueTitle.slice(0, 117)}...`;
+            const { data } = await github.rest.issues.create({ owner, repo, title: issueTitle, body });
+            core.notice(`Opened issue #${data.number}.`);
+
+  # Runs no agent. A pass resolves what an earlier failure reported.
+  resolve-report:
+    name: Resolve Report
+    needs: resolve
+    if: needs.resolve.outputs.mode == 'resolve'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: explain-actions-lock-report-${{ needs.resolve.outputs.key }}
+    permissions:
+      issues: write # Comment on and close the open issue
+      pull-requests: write # Minimize the comment
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Resolve Report
+        uses: actions/github-script@v9.0.0
+        env:
+          NUMBER: ${{ needs.resolve.outputs.number }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run;
+            const marker = process.env.MARKER;
+            const bot = 'github-actions[bot]';
+            const number = Number(process.env.NUMBER) || 0;
+            const ours = (item) => item.user?.login === bot && (item.body ?? '').includes(marker);
+
+            if (number) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: number, per_page: 100,
+              });
+              const comment = comments.filter(ours).pop();
+              if (!comment) {
+                core.info('No report to resolve.');
+                return;
+              }
+              const { node } = await github.graphql(
+                'query($id: ID!) { node(id: $id) { ... on IssueComment { isMinimized } } }',
+                { id: comment.node_id },
+              );
+              if (node?.isMinimized) {
+                core.info('The report is already resolved.');
+                return;
+              }
+              await github.graphql(
+                'mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: RESOLVED}) { minimizedComment { isMinimized } } }',
+                { id: comment.node_id },
+              );
+              core.notice(`Resolved the report on #${number}.`);
+              return;
+            }
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', creator: bot, per_page: 100,
+            });
+            const issue = issues.find((i) => !i.pull_request && ours(i));
+            if (!issue) {
+              core.info('No open issue to close.');
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issue.number,
+              body: `Passed again in ${run.html_url} at ${run.head_sha.slice(0, 7)}.`,
+            });
+            await github.rest.issues.update({
+              owner, repo, issue_number: issue.number, state: 'closed', state_reason: 'completed',
+            });
+            core.notice(`Closed issue #${issue.number}.`);
