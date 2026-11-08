@@ -16,8 +16,14 @@ name: PR Metadata
 # Under pull_request, fork pull requests get no secrets and a read-only token, so this can't run
 # there. Under workflow_run it gets both, for fork pull requests too, which makes everything from
 # the pull request untrusted input to a privileged run:
-# - Nothing from the pull request is checked out or run. Claude reads only its title, body, commits
-#   and diff, fetched through the API into an otherwise empty workspace.
+# - Nothing from the pull request is checked out or run. The collect job fetches its title, body,
+#   commits and diff once through the API, into an artifact, and Claude reads only that artifact,
+#   in an otherwise empty workspace.
+# - The guard job screens the title, body and commit messages in that artifact with Prompt Guard,
+#   and Claude only runs on the verdict clean. Because every job reads the same artifact, an edit
+#   after the screen reaches no agent. The diff isn't screened: it is code, and a change to a
+#   prompt would be flagged every time. Prompt Guard is called by tag: its OpenBao role binds the
+#   job_workflow_ref claim to refs/tags/v*, which a commit SHA doesn't match.
 # - Claude runs in jobs with read-only tokens, and its title and description pass _screen.yml, which
 #   fails on anything that looks like a secret, before they are applied. Its labels are checked
 #   against the repository's labels. Claude's text is never printed before it passed the screen.
@@ -27,14 +33,22 @@ name: PR Metadata
 # anything runs:
 #   actions: write        # rerun: re-run the failed Check Metadata jobs
 #   contents: read        # screen jobs: check out the default branch
-#   issues: write         # classify: read the labels; apply-labels: label the pull request
+#   id-token: write       # guard: log in to OpenBao
+#   issues: write         # guard: escalate a flag; classify: read the labels; apply-labels: label
 #   pull-requests: write  # read the pull request; apply the title, labels and description
-# and pass the CLAUDE_CODE_OAUTH_TOKEN secret.
+# and pass the CLAUDE_CODE_OAUTH_TOKEN secret, and the Prompt Guard secrets PROMPT_GUARD_CLIENT_ID,
+# CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET.
 on:
   workflow_call:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      PROMPT_GUARD_CLIENT_ID:
+        required: false
+      CF_ACCESS_CLIENT_ID:
+        required: false
+      CF_ACCESS_CLIENT_SECRET:
+        required: false
 
 permissions: {}
 
@@ -148,11 +162,80 @@ jobs:
             core.setOutput('body-hash', sha256(raw));
             core.setOutput('unlabeled', String(pr.labels.length === 0));
 
+  # The one snapshot of the pull request that the guard screens and every Claude job reads.
+  collect:
+    name: Collect Pull Request
+    needs: resolve
+    if: >-
+      needs.resolve.outputs.unlabeled == 'true'
+      || needs.resolve.outputs.title-valid == 'false'
+      || needs.resolve.outputs.write-description == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read # Read the title, body, commits and diff
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ needs.resolve.outputs.number }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.3
+        with:
+          egress-policy: audit
+      - name: Collect Pull Request
+        run: |
+          dir="$RUNNER_TEMP/pull-request"
+          mkdir -p "$dir"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+          jq -r '.title' "$RUNNER_TEMP/pr.json" > "$dir/title.txt"
+          jq -r '.body // ""' "$RUNNER_TEMP/pr.json" > "$dir/body.txt"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" > "$RUNNER_TEMP/commits.json"
+          # The full messages, which the guard screens; the subjects are their first lines.
+          jq -r '.[] | .commit.message | split("\n") | "- \(.[0])\n\(.[1:] | join("\n") | sub("^\n+"; ""))"' \
+            "$RUNNER_TEMP/commits.json" > "$dir/commits.txt"
+          jq -r '.[] | .commit.message | split("\n")[0]' "$RUNNER_TEMP/commits.json" > "$dir/commit-subjects.txt"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
+            --jq '.[] | "\(.filename) +\(.additions) -\(.deletions)"' > "$dir/files.txt"
+          # Very large diffs can't be fetched; the file list still describes them.
+          if gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.diff"; then
+            head -c "$MAX_DIFF_BYTES" "$RUNNER_TEMP/pr.diff" > "$dir/pr.diff"
+          else
+            echo "(The diff is too large to fetch; use files.txt.)" > "$dir/pr.diff"
+          fi
+      - name: Upload Pull Request
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: pr-metadata-pull-request
+          path: ${{ runner.temp }}/pull-request
+          retention-days: 1
+          if-no-files-found: error
+          # A re-run of this job replaces the snapshot of the earlier attempt.
+          overwrite: true
+
+  # Screens the free text of the snapshot. A flag or an error leaves the pull request as it is.
+  guard:
+    name: Guard
+    needs: collect
+    permissions:
+      id-token: write # Log in to OpenBao
+      issues: write # Escalate a flag; a workflow_run event carries no pull request, so as an issue
+      pull-requests: write # Declared by the shared workflow
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.1.0
+    secrets:
+      PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+    with:
+      artifact: pr-metadata-pull-request
+      files: |
+        title=title.txt
+        body=body.txt
+        commits=commits.txt
+
   classify:
     name: Classify PR
-    needs: resolve
+    needs: [resolve, guard]
     # Only once: later pushes don't re-label, and labels set by people stay.
-    if: needs.resolve.outputs.unlabeled == 'true'
+    if: needs.resolve.outputs.unlabeled == 'true' && needs.guard.outputs.verdict == 'clean'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -194,21 +277,24 @@ jobs:
               additionalProperties: false
             }' <<< "$labels")"
           } >> "$GITHUB_OUTPUT"
+      # The snapshot the guard screened, not the pull request as it is now.
+      - name: Download Pull Request
+        if: steps.labels.outputs.labels != '[]'
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: pr-metadata-pull-request
+          path: ${{ runner.temp }}/pull-request
       - name: Read Pull Request
         id: pr
         if: steps.labels.outputs.labels != '[]'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ needs.resolve.outputs.number }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
           delimiter="EOF_$(openssl rand -hex 16)"
           {
             echo "title<<$delimiter"
-            jq -r '.title' "$RUNNER_TEMP/pr.json"
+            cat "$RUNNER_TEMP/pull-request/title.txt"
             echo "$delimiter"
             echo "body<<$delimiter"
-            jq -r '.body // ""' "$RUNNER_TEMP/pr.json"
+            cat "$RUNNER_TEMP/pull-request/body.txt"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
       - name: Classify
@@ -280,41 +366,35 @@ jobs:
 
   rewrite:
     name: Rewrite PR Title
-    needs: resolve
-    if: needs.resolve.outputs.title-valid == 'false'
+    needs: [resolve, guard]
+    if: needs.resolve.outputs.title-valid == 'false' && needs.guard.outputs.verdict == 'clean'
     runs-on: ubuntu-latest
     # Advisory: a title that stays invalid fails the pull request's own title check.
     continue-on-error: true
     permissions:
-      pull-requests: read # Read the title, commits and diff
+      pull-requests: read # For claude-code-action's own API calls; the snapshot comes as an artifact
     outputs:
       # A valid Conventional Commits title, not yet screened.
       title: ${{ steps.check.outputs.title }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ needs.resolve.outputs.number }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.3
         with:
           egress-policy: audit
-      # No checkout: the workspace holds only what is collected here, so Claude can read nothing
-      # else from the pull request, and no .git/ holds a token.
-      - name: Collect Pull Request
+      # No checkout: the workspace holds only the snapshot the guard screened, so Claude can read
+      # nothing else from the pull request, and no .git/ holds a token.
+      - name: Download Pull Request
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: pr-metadata-pull-request
+          path: ${{ runner.temp }}/pull-request
+      - name: Prepare Context
         run: |
+          snapshot="$RUNNER_TEMP/pull-request"
           mkdir -p "$CONTEXT_DIR"
-          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.title' > "$CONTEXT_DIR/title.txt"
+          cp "$snapshot/title.txt" "$snapshot/files.txt" "$snapshot/pr.diff" "$CONTEXT_DIR/"
+          cp "$snapshot/commit-subjects.txt" "$CONTEXT_DIR/commits.txt"
           grep -v '^[[:space:]]*$' <<< "$TITLE_TYPES" > "$CONTEXT_DIR/types.txt"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" \
-            --jq '.[] | .commit.message | split("\n")[0]' > "$CONTEXT_DIR/commits.txt"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
-            --jq '.[] | "\(.filename) +\(.additions) -\(.deletions)"' > "$CONTEXT_DIR/files.txt"
-          # Very large diffs can't be fetched; the file list still describes them.
-          if gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.diff"; then
-            head -c "$MAX_DIFF_BYTES" "$RUNNER_TEMP/pr.diff" > "$CONTEXT_DIR/pr.diff"
-          else
-            echo "(The diff is too large to fetch; use files.txt.)" > "$CONTEXT_DIR/pr.diff"
-          fi
       # Read-only: Claude returns the title as structured output, and the apply job applies it.
       - name: Write Title
         id: claude
@@ -477,8 +557,8 @@ jobs:
 
   description:
     name: Write PR Description
-    needs: resolve
-    if: needs.resolve.outputs.write-description == 'true'
+    needs: [resolve, guard]
+    if: needs.resolve.outputs.write-description == 'true' && needs.guard.outputs.verdict == 'clean'
     runs-on: ubuntu-latest
     # Advisory: a description is a convenience.
     continue-on-error: true
@@ -488,34 +568,26 @@ jobs:
       group: pr-metadata-description-${{ needs.resolve.outputs.number }}
       cancel-in-progress: true
     permissions:
-      pull-requests: read # Read the title, commits and diff
+      pull-requests: read # For claude-code-action's own API calls; the snapshot comes as an artifact
     outputs:
       # Not yet screened.
       description: ${{ steps.read.outputs.description }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ needs.resolve.outputs.number }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.3
         with:
           egress-policy: audit
-      # No checkout, as in the rewrite job.
-      - name: Collect Pull Request
+      # No checkout, as in the rewrite job: only the snapshot the guard screened.
+      - name: Download Pull Request
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: pr-metadata-pull-request
+          path: ${{ runner.temp }}/pull-request
+      - name: Prepare Context
         run: |
+          snapshot="$RUNNER_TEMP/pull-request"
           mkdir -p "$CONTEXT_DIR"
-          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.title' > "$CONTEXT_DIR/title.txt"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits" \
-            --jq '.[] | .commit.message | split("\n") | "- \(.[0])\n\(.[1:] | join("\n") | sub("^\n+"; ""))"' \
-            > "$CONTEXT_DIR/commits.txt"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
-            --jq '.[] | "\(.filename) +\(.additions) -\(.deletions)"' > "$CONTEXT_DIR/files.txt"
-          # Very large diffs can't be fetched; the file list still describes them.
-          if gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.diff"; then
-            head -c "$MAX_DIFF_BYTES" "$RUNNER_TEMP/pr.diff" > "$CONTEXT_DIR/pr.diff"
-          else
-            echo "(The diff is too large to fetch; use files.txt.)" > "$CONTEXT_DIR/pr.diff"
-          fi
+          cp "$snapshot/title.txt" "$snapshot/commits.txt" "$snapshot/files.txt" "$snapshot/pr.diff" "$CONTEXT_DIR/"
       # Read-only: Claude returns the description as structured output, and the post job posts it
       # once the screen passed.
       - name: Write Description
