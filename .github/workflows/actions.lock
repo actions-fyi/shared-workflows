@@ -9,6 +9,7 @@ workflows:
         - 'step-security/octo-sts-action@v1.1.1'
     '.github/workflows/_claude.yml':
         - 'actions/checkout@v7.0.1'
+        - 'actions/upload-artifact@v7.0.2'
         - 'step-security/claude-code-action@v1.0.238'
         - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_explain.yml':
