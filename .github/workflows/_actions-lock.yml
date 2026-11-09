@@ -82,7 +82,7 @@ jobs:
       check: ${{ steps.changes.outputs.check }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # A three-dot compare lists what the pull request changes since it branched off; for a merge
@@ -136,7 +136,7 @@ jobs:
       contents: read # Read the workflows
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # The pull request's head, not its merge commit, so the check and the fix see the same files.
@@ -188,7 +188,7 @@ jobs:
       FIX_TRAILER: "Lockfile-Fixed-By: ${{ github.workflow }}"
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # The pull request's head, because the fix is committed on top of it.

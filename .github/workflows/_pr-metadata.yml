@@ -98,7 +98,7 @@ jobs:
       unlabeled: ${{ steps.resolve.outputs.unlabeled }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # workflow_run.pull_requests is empty for fork pull requests, so the pull request is found by
@@ -181,7 +181,7 @@ jobs:
       PR_NUMBER: ${{ needs.resolve.outputs.number }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       - name: Collect Pull Request
@@ -252,7 +252,7 @@ jobs:
       labels: ${{ steps.claude.outputs.structured_output }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       - name: List Labels
@@ -346,7 +346,7 @@ jobs:
       pull-requests: write # Label the pull request
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       - name: Apply Labels
@@ -381,7 +381,7 @@ jobs:
       title: ${{ steps.check.outputs.title }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # No checkout: the workspace holds only the snapshot the guard screened, so Claude can read
@@ -498,7 +498,7 @@ jobs:
       applied: ${{ steps.apply.outputs.applied }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       - name: Apply Title
@@ -524,7 +524,7 @@ jobs:
       actions: write # Re-run the failed jobs of the Check Metadata runs
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       - name: Re-run Check Metadata
@@ -577,7 +577,7 @@ jobs:
       description: ${{ steps.read.outputs.description }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # No checkout, as in the rewrite job: only the snapshot the guard screened.
@@ -689,7 +689,7 @@ jobs:
       pull-requests: write # Write the description
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       - name: Post Description

@@ -5,7 +5,7 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/_actions-lock.yml':
         - 'actions/checkout@v7.0.1'
-        - 'step-security/harden-runner@v2.22.3'
+        - 'step-security/harden-runner@v2.22.4'
         - 'step-security/octo-sts-action@v1.1.1'
     '.github/workflows/_claude.yml':
         - 'actions/checkout@v7.0.1'
@@ -15,7 +15,7 @@ workflows:
     '.github/workflows/_explain.yml':
         - 'actions/github-script@v9.0.0'
         - 'step-security/claude-code-action@v1.0.268'
-        - 'step-security/harden-runner@v2.22.3'
+        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_label-sync.yml':
         - 'actions/checkout@v7.0.1'
         - 'step-security/harden-runner@v2.22.4'
@@ -25,28 +25,28 @@ workflows:
         - 'actions/github-script@v9.0.0'
         - 'actions/upload-artifact@v7.0.2'
         - 'step-security/claude-code-action@v1.0.268'
-        - 'step-security/harden-runner@v2.22.3'
+        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_renovate.yml':
         - 'actions/checkout@v7.0.1'
-        - 'step-security/harden-runner@v2.22.3'
+        - 'step-security/harden-runner@v2.22.4'
         - 'suzuki-shunsuke/github-action-renovate-config-validator@v2.4.1'
     '.github/workflows/_screen.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
         - 'step-security/claude-code-action@v1.0.268'
-        - 'step-security/harden-runner@v2.22.3'
+        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_triage.yml':
         - 'actions/checkout@v7.0.1'
         - 'step-security/claude-code-action@v1.0.268'
         - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_zizmor.yml':
         - 'actions/checkout@v7.0.1'
-        - 'step-security/harden-runner@v2.22.3'
+        - 'step-security/harden-runner@v2.22.4'
         - 'zizmorcore/zizmor-action@v0.8.1'
     '.github/workflows/actions-lock.yml': []
     '.github/workflows/renovate.yml': []
     '.github/workflows/test.yml':
-        - 'step-security/harden-runner@v2.22.3'
+        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/zizmor.yml': []
 dependencies:
     'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9':
@@ -91,11 +91,6 @@ dependencies:
         repo_id: 1091477204
         uses:
             - 'step-security/setup-bun@f6f5dadeac34f70c7828f731569e8d6e8330b8fb'
-    'step-security/harden-runner@v2.22.3':
-        ref: 'v2.22.3'
-        commit: 'sha1-46b06cea07f9e64621fdf066ba77ac6915163d43'
-        owner_id: 88700172
-        repo_id: 422287306
     'step-security/harden-runner@v2.22.4':
         ref: 'v2.22.4'
         commit: 'sha1-1d88384fd173af6ecb012dfd0264a306b711241a'
