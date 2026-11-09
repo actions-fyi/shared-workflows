@@ -13,7 +13,7 @@ name: Validate
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
 #   contents: read        # renovate, upstream, suggest: read the Renovate configs
-#   pull-requests: write  # renovate: review permission; suggest: post the suggestions
+#   pull-requests: write  # suggest: post the suggestions
 #
 # Events: the renovate and upstream jobs run on any event, e.g. pull_request, merge_group and push.
 # The suggest job only runs on pull requests from a branch of the same repository.
@@ -37,8 +37,7 @@ jobs:
     concurrency:
       group: lint-${{ github.ref }}
     permissions:
-      contents: read # Read workflow files
-      pull-requests: write # For review permission
+      contents: read # Read the Renovate configs
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
@@ -46,6 +45,8 @@ jobs:
           egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Find Configs
         id: files
         run: >-
