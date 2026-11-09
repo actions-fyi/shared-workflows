@@ -136,6 +136,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Check Verdict
         env:
           RESULT: ${{ needs.guard.result }}
