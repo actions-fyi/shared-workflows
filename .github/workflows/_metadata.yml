@@ -1,0 +1,70 @@
+name: Check Metadata
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the pull request title check of the org ruleset's
+# Check Metadata. Workflows in other repositories, ruleset workflows included, call it by full path
+# and tag: in a ruleset workflow, GitHub resolves `$/` against the target repository, where this
+# file doesn't exist. This repository's own caller uses `$/`. It runs as part of the caller's run,
+# in the target repository's context: the caller's event, token and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
+# it must also run on merge_group.
+#
+# Checks that the pull request title is a Conventional Commits title. Editing a title starts no new
+# run, so after fixing a failed title by hand, re-run the job or push again. Fixes are applied by
+# _pr-metadata.yml, whose listener follows the caller's runs by their name, Check Metadata; this
+# check neither depends on nor waits for it.
+#
+# The calling job must grant what the title job declares, or the call fails before anything runs:
+#   pull-requests: read  # read the title and commits
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  # The Conventional Commits types a title may use. These are the check's defaults.
+  TITLE_TYPES: |
+    feat
+    fix
+    docs
+    style
+    refactor
+    perf
+    test
+    build
+    ci
+    chore
+    revert
+
+jobs:
+  title:
+    name: PR Title
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read # Read the title and commits
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      # A merge group has no pull request payload, so the action would fail there. The title was
+      # already checked before the pull request was queued.
+      # The check also fails when the title is fine but the only commit's message isn't: GitHub
+      # would use that message for the squash commit.
+      - name: Check Conventional Commits Title
+        id: check
+        if: github.event_name == 'pull_request'
+        uses: step-security/action-semantic-pull-request@v6.1.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: ${{ env.TITLE_TYPES }}
+          validateSingleCommit: true
+          subjectPattern: ^[^,]+$
+          subjectPatternError: 'The subject must not contain commas: "{subject}"'
+      - name: Report Invalid Title
+        if: failure() && steps.check.outcome == 'failure'
+        run: |
+          echo "::error::The title isn't a valid Conventional Commits title (type(scope): subject, with type one of: $(xargs <<< "$TITLE_TYPES"), and no commas in the subject). It may be fixed automatically; otherwise edit it and re-run this check, as editing starts no new run."

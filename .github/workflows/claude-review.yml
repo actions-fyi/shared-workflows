@@ -1,0 +1,21 @@
+name: Claude Review
+# This repository's caller of its own shared workflow _claude-review.yml, which holds the review;
+# see there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
+# ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups.
+on:
+  pull_request:
+  merge_group:
+
+permissions: {}
+
+jobs:
+  review:
+    name: Review
+    # What the claude job of _claude-review.yml declares; a called job can't get more.
+    permissions:
+      actions: read # Find the last reviewed commit from this workflow's earlier runs
+      contents: read # Check out the pull request
+      pull-requests: write # Post review comments
+    uses: $/.github/workflows/_claude-review.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

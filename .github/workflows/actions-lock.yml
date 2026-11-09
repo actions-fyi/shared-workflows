@@ -1,21 +1,15 @@
 name: Check Actions Lockfile
 # This repository's caller of its own shared workflow _actions-lock.yml, which holds the logic; see
 # there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
-# ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups
-# too.
-#
-# Triggers:
-# - pull_request and merge_group: check the workflows the change touches, and fix the lockfile on
-#   pull requests from branches of this repository.
-# - push to main: check what the push changed.
+# ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups:
+# it checks the workflows the change touches, and fixes the lockfile on pull requests from branches
+# of this repository. Pushes to main are checked by actions-lock-push.yml of actions-fyi/.github.
 #
 # The name names the fix commit's trailer (Lockfile-Fixed-By), so it stays the same as the org
 # ruleset's caller.
 on:
   pull_request:
   merge_group:
-  push:
-    branches: [main]
 
 permissions: {}
 
