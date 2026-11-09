@@ -2,7 +2,10 @@ name: PR Metadata
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags. It is called by a workflow_run listener in consumer
 # repositories, by full path and tag, so inside it github.event is the workflow_run payload, and the
-# token and secrets are the base repository's.
+# token and secrets are the base repository's. The listener follows the org ruleset's Check Metadata
+# runs, which start on every push to a pull request. Only a run's first attempt counts: the rerun
+# job below re-runs that check after fixing the title, and its second attempt must not start this
+# workflow again.
 #
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
@@ -81,7 +84,7 @@ defaults:
 jobs:
   resolve:
     name: Find Pull Request
-    if: github.event.workflow_run.event == 'pull_request'
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.run_attempt == 1
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read # Find the pull request and read its metadata
