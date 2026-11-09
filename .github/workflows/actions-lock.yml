@@ -8,8 +8,6 @@ name: Check Actions Lockfile
 # - pull_request and merge_group: check the workflows the change touches, and fix the lockfile on
 #   pull requests from branches of this repository.
 # - push to main: check what the push changed.
-# - schedule and workflow_dispatch: check everything, for upstream drift such as moved tags or
-#   vanished pins, which no file change shows.
 #
 # The name names the fix commit's trailer (Lockfile-Fixed-By), so it stays the same as the org
 # ruleset's caller.
@@ -18,9 +16,6 @@ on:
   merge_group:
   push:
     branches: [main]
-  schedule:
-    - cron: "43 2 * * 3"
-  workflow_dispatch:
 
 permissions: {}
 
@@ -31,7 +26,4 @@ jobs:
     permissions:
       contents: read # Compare the changes, read the workflows, check out the pull request
       id-token: write # Exchange the fix job's OIDC token with Octo STS
-      pull-requests: write # Create or update the explanation comment
     uses: $/.github/workflows/_actions-lock.yml
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

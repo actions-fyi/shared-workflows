@@ -4,9 +4,8 @@ name: Check Actions Lockfile
 # actions-lock.yml of actions-fyi/ruleset-workflows. Callers stay thin:
 # - the org ruleset's entry point in actions-fyi/ruleset-workflows, for pull requests and merge
 #   groups, and the push callers that actions-fyi/.github distributes, call it by full path and
-#   tag, e.g. `uses: actions-fyi/shared-workflows/.github/workflows/_actions-lock.yml@v1.0.0`.
-#   In a ruleset workflow, GitHub resolves `$/` against the target repository, where this file
-#   doesn't exist.
+#   tag. In a ruleset workflow, GitHub resolves `$/` against the target repository, where this
+#   file doesn't exist.
 # - this repository's own actions-lock.yml calls it with `uses: $/.github/workflows/_actions-lock.yml`.
 # It runs as part of the caller's run, in the target repository's context: the caller's event,
 # token and secrets. The caller's name is what a ruleset shows, so it must say what it checks, and
@@ -16,10 +15,8 @@ name: Check Actions Lockfile
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   contents: read        # changes, check, fix; the comment job's checkout
+#   contents: read        # changes, check, fix
 #   id-token: write       # fix: exchange the job's OIDC token with Octo STS
-#   pull-requests: write  # comment: create or update the explanation comment
-# and pass the CLAUDE_CODE_OAUTH_TOKEN secret, which the comment job hands to _explain.yml.
 #
 # Events:
 # - pull_request and merge_group, from the ruleset or a caller. Rulesets ignore event filters and
@@ -28,8 +25,6 @@ name: Check Actions Lockfile
 #   caller must also run on merge_group, where this verifies the merged result.
 # - push: checks when the pushed commits change a workflow or action file, and checks everything
 #   when the push creates the branch.
-# - schedule and workflow_dispatch: always check. Upstream drift, a moved tag or a vanished pin,
-#   shows up without any file change.
 # Any other event checks too, because its changes can't be listed.
 #
 # Rulesets ignore paths filters too, and a required workflow that never runs would block merging.
@@ -37,11 +32,9 @@ name: Check Actions Lockfile
 # or push changes a workflow or action file, the lockfile included. If not, the check job and the
 # jobs after it are skipped, and the run still succeeds, because the changes job does. On pull
 # requests, a pin that stops verifying upstream is therefore reported by the next pull request that
-# touches the workflows, not by unrelated ones; the scheduled run reports it sooner.
+# touches the workflows, not by unrelated ones.
 #
-# Outside pull requests, the fix, results and comment jobs stay skipped: a failed check only fails
-# the run. Reporting failures of push and scheduled runs as issues is left to a later rework of
-# _explain.yml.
+# Outside pull requests, the fix job stays skipped: a failed check only fails the run.
 #
 # The check job fails when .github/workflows/actions.lock is out of sync with the workflows, or a
 # locked pin no longer verifies upstream. Repositories without a lockfile aren't onboarded and are
@@ -57,31 +50,23 @@ name: Check Actions Lockfile
 # so the new head would wait for its required checks forever, and because that token can't change
 # files under .github/workflows/. It uses a short-lived token from Octo STS instead, granted by an
 # org-level trust policy in .github/chainguard/ of actions-fyi/.github. The fix job runs in this
-# file, so the token's job_workflow_ref names this file, not the caller. In other repositories,
-# callers run a released version, at refs/tags/v..., which actions-lock.sts.yaml (identity
-# actions-lock) matches. In this repository, a pull request runs its own copy of this file, at
-# refs/pull/<n>/merge, so actions-lock.shared.sts.yaml (identity actions-lock.shared) applies
-# instead: it pins the subject to this repository and limits the token to it. The fix job only
-# picks the identity; the policies decide what's allowed. The policies must accept this file
-# before a caller switches to it, or the fix job gets no token.
+# file, so the token's job_workflow_ref names this file, not the caller. Callers run a released
+# version, at refs/tags/v..., which actions-lock.sts.yaml (identity actions-lock) matches. In this
+# repository, a pull request runs its own copy of this file, at refs/pull/<n>/merge, which that
+# policy doesn't accept, so the fix job gets no token there and only reports the failure. The fix
+# job only requests the identity; the policy decides what's allowed. The policy must accept this
+# file before a caller switches to it, or the fix job gets no token.
 #
-# On the same pull requests, the results job uploads the findings and the fix's outcome as an
-# artifact, and the comment job calls the reusable _explain.yml, where Claude Haiku explains the
-# findings, and either what the fix changed or what the author still has to do, in one comment that
-# later runs update.
+# A failed check on a pull request is explained by _explain.yml, which the consumer repository's
+# workflow_run listener calls when this run completes. It reads the failed jobs' logs.
 on:
   workflow_call:
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
 
 permissions: {}
 
 env:
   # renovate: datasource=github-releases depName=github/gh-actions-lock
   GH_ACTIONS_LOCK_VERSION: v0.4.1
-  # Job outputs are capped at 1 MB per job; logs and diffs are cut to this many bytes.
-  MAX_OUTPUT_BYTES: 50000
 
 defaults:
   run:
@@ -106,8 +91,7 @@ jobs:
       # lists at most 300 files, and a larger or unlistable change is checked rather than guessed.
       # The paths are the ones the fix job may commit.
       #
-      # A push that creates the branch has no before (all zeros), and scheduled and manual runs
-      # look for upstream drift, which no file change shows, so these check everything.
+      # A push that creates the branch has no before (all zeros), so it checks everything.
       - name: Find Changed Workflows
         id: changes
         env:
@@ -121,9 +105,6 @@ jobs:
             exit 0
           }
           case "$GITHUB_EVENT_NAME" in
-            schedule | workflow_dispatch)
-              check "A $GITHUB_EVENT_NAME run checks for upstream drift, so the lockfile is checked."
-              ;;
             push)
               [[ ! "$BASE_SHA" =~ ^0+$ ]] \
                 || check "The push created the branch, so the lockfile is checked."
@@ -153,8 +134,6 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read # Read the workflows
-    outputs:
-      log: ${{ steps.verify.outputs.log }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.3
@@ -182,17 +161,9 @@ jobs:
         run: gh extension install github/gh-actions-lock --pin "$GH_ACTIONS_LOCK_VERSION"
       - name: Verify Lockfile
         if: steps.lockfile.outputs.found == 'true'
-        id: verify
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          log="$RUNNER_TEMP/verify.log"
-          status=0
-          gh actions-lock --verify > "$log" 2>&1 || status=$?
-          cat "$log"
-          delimiter="EOF_$(openssl rand -hex 16)"
-          { echo "log<<$delimiter"; head -c "$MAX_OUTPUT_BYTES" "$log"; echo; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
-          exit "$status"
+        run: gh actions-lock --verify
 
   fix:
     name: Fix Actions Lockfile
@@ -212,10 +183,6 @@ jobs:
     permissions:
       contents: read # Read the workflows
       id-token: write # Exchange the job's OIDC token with Octo STS
-    outputs:
-      log: ${{ steps.regenerate.outputs.log }}
-      diff: ${{ steps.fix.outputs.diff }}
-      commit: ${{ steps.commit.outputs.oid }}
     env:
       # Marks the fix commit, so a fix that doesn't settle the lockfile isn't committed again.
       FIX_TRAILER: "Lockfile-Fixed-By: ${{ github.workflow }}"
@@ -237,17 +204,9 @@ jobs:
       # A fix run performs the same checks as --verify, and writes nothing when one of them fails,
       # so moved tags and unreachable pins still need a person.
       - name: Regenerate Lockfile
-        id: regenerate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          log="$RUNNER_TEMP/regenerate.log"
-          status=0
-          gh actions-lock > "$log" 2>&1 || status=$?
-          cat "$log"
-          delimiter="EOF_$(openssl rand -hex 16)"
-          { echo "log<<$delimiter"; head -c "$MAX_OUTPUT_BYTES" "$log"; echo; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
-          exit "$status"
+        run: gh actions-lock
       - name: Collect Fix
         id: fix
         run: |
@@ -258,8 +217,6 @@ jobs:
             exit 1
           fi
           git diff --cached
-          delimiter="EOF_$(openssl rand -hex 16)"
-          { echo "diff<<$delimiter"; git diff --cached | head -c "$MAX_OUTPUT_BYTES"; echo; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
           for path in "${changed[@]}"; do
             case "$path" in
               .github/workflows/* | action.yml | action.yaml | */action.yml | */action.yaml) ;;
@@ -277,11 +234,8 @@ jobs:
       # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
       # pull request can't add or weaken them. The token is revoked when the job ends.
       #
-      # Other repositories run a released version of this file, at refs/tags/v..., and request
-      # actions-lock. This repository's pull requests run their own copy, at refs/pull/<n>/merge,
-      # which that policy doesn't accept, so they request actions-lock.shared, whose policy pins
-      # the subject to this repository and limits the token to it. The expression only picks the
-      # identity; the policies decide what's allowed.
+      # actions-lock.sts.yaml accepts only released versions of this file, at refs/tags/v...; this
+      # repository's pull requests run their own copy, at refs/pull/<n>/merge, and request actions-lock.shared.
       - name: Get Fix Token
         if: steps.fix.outputs.changed == 'true'
         id: sts
@@ -300,7 +254,6 @@ jobs:
       # commit's author, octo-sts[bot], in gitIgnoredAuthors, or it stops updating the branch.
       - name: Commit Fix
         if: steps.fix.outputs.changed == 'true' && steps.sts.outcome == 'success'
-        id: commit
         env:
           GH_TOKEN: ${{ steps.sts.outputs.token }}
           HEAD_REF: ${{ github.head_ref }}
@@ -342,102 +295,4 @@ jobs:
             echo "::error::Couldn't commit the lockfile fix. If the branch moved since this run started, the new push gets its own run."
             exit 1
           fi
-          echo "oid=$oid" >> "$GITHUB_OUTPUT"
           echo "::notice::Committed the lockfile fix as $oid. Its own run checks the result."
-
-  # Hands the results to the comment job as files: _explain.yml downloads them for Claude.
-  results:
-    name: Collect Lockfile Results
-    needs: [check, fix]
-    # Same pull requests as the comment job.
-    if: >-
-      always()
-      && needs.check.result == 'failure'
-      && github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
-      && github.event.pull_request.user.login != 'dependabot[bot]'
-    runs-on: ubuntu-latest
-    permissions: {} # None: uploading an artifact needs no token scope
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
-        with:
-          egress-policy: audit
-      - name: Collect Results
-        env:
-          VERIFY_LOG: ${{ needs.check.outputs.log }}
-          FIX_RESULT: ${{ needs.fix.result }}
-          FIX_LOG: ${{ needs.fix.outputs.log }}
-          FIX_DIFF: ${{ needs.fix.outputs.diff }}
-          FIX_COMMIT: ${{ needs.fix.outputs.commit }}
-        run: |
-          results="$RUNNER_TEMP/actions-lock-results"
-          mkdir -p "$results"
-          printf '%s\n' "$VERIFY_LOG" > "$results/verify.log"
-          printf '%s\n' "$FIX_LOG" > "$results/fix.log"
-          printf '%s\n' "$FIX_DIFF" > "$results/fix.diff"
-          if [[ -n "$FIX_COMMIT" ]]; then
-            echo "committed $FIX_COMMIT" > "$results/fix-result.txt"
-          else
-            echo "not committed (fix job: $FIX_RESULT)" > "$results/fix-result.txt"
-          fi
-      # Replaces the artifact when a re-run of all jobs uploads it again.
-      - name: Upload Results
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: actions-lock-results
-          path: ${{ runner.temp }}/actions-lock-results/
-          if-no-files-found: error
-          overwrite: true
-
-  # No continue-on-error: a job that calls a reusable workflow can't have one, and a failing
-  # explanation should show.
-  comment:
-    name: Explain Actions Lockfile
-    needs: [check, fix, results]
-    # Same pull requests as the fix job: forks and Dependabot get no access to the Claude secret.
-    if: >-
-      always()
-      && needs.check.result == 'failure'
-      && github.event_name == 'pull_request'
-      && github.event.pull_request.head.repo.full_name == github.repository
-      && github.event.pull_request.user.login != 'dependabot[bot]'
-    permissions:
-      contents: read # Check out the pull request, so Claude can read the workflows
-      pull-requests: write # Create or update the explanation comment
-    uses: $/.github/workflows/_explain.yml
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-    with:
-      results: actions-lock-results
-      # The marker of the comments posted before _explain.yml existed, so they keep being updated.
-      marker: "<!-- actions-lock-explanation -->"
-      # Renovate's pull requests are the most common source of an outdated lockfile, and
-      # octo-sts[bot] starts the run that checks a fix commit, which can still fail.
-      allowed-bots: renovate[bot],octo-sts[bot]
-      # What gh actions-lock prints, so the screen doesn't take it for secrets.
-      screen-context: >-
-        The results come from gh actions-lock, so the explanation may also quote actions.lock
-        entries: action refs, commits written as sha1- followed by 40 hex characters, and numeric
-        owner_id and repo_id values.
-      prompt: |
-        REPO: ${{ github.repository }}
-        PR NUMBER: ${{ github.event.pull_request.number }}
-
-        The GitHub Actions lockfile check (gh actions-lock) failed on this pull request.
-        The PR head is checked out. The results directory holds:
-        - verify.log: output of `gh actions-lock --verify`, which failed
-        - fix-result.txt: whether an automatic fix was committed, and its commit SHA
-        - fix.log: output of `gh actions-lock`, the fix attempt (empty if none ran)
-        - fix.diff: the changes the fix made (empty if none)
-
-        Write a short PR comment in GitHub Markdown for the PR author:
-        - What was wrong, per finding: which workflow, which action, and why it failed.
-        - If a fix was committed: what it changed, and that the fix commit gets its own run.
-        - Otherwise: what the author has to do. Out-of-date entries are fixed by running
-          `gh actions-lock` and pushing the result. For a moved tag or an unreachable pin,
-          the author must inspect the upstream repository before running
-          `gh actions-lock --relock`. Never suggest editing actions.lock by hand, deleting
-          it, or using --accept-moved without that inspection.
-        Read the workflow files if you need context. No preamble, headings only if needed,
-        no praise.

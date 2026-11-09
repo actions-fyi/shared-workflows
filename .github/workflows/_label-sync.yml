@@ -1,0 +1,43 @@
+name: Sync
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows and holds
+# the label sync that used to be label-sync.yml of actions-fyi/.github. It runs as part of the
+# caller's run, in the target repository's context: the caller's event, token and secrets. It
+# always syncs the labels from .github/labels.yml of actions-fyi/.github.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# The calling job must grant what the labels job declares, or the call fails before anything runs:
+#   contents: read  # check out the label config
+#   issues: write   # create and update labels
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  labels:
+    name: Labels
+    runs-on: ubuntu-latest
+    concurrency:
+      group: label-sync-${{ github.ref }}
+    permissions:
+      contents: read # Check out the label config
+      issues: write # Create and update labels
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Label Config
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: actions-fyi/.github
+          ref: main
+          path: upstream
+          sparse-checkout: .github/labels.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Sync Labels
+        uses: step-security/label-sync@v2.3.3
+        with:
+          config-file: upstream/.github/labels.yml

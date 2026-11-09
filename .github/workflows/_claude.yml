@@ -1,0 +1,174 @@
+name: Claude
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows and holds
+# the @claude mention handling that used to be claude.yml of actions-fyi/.github. It runs as part
+# of the caller's run, in the target repository's context: the caller's event, token and secrets.
+# The caller runs it on issue_comment, pull_request_review_comment, issues and
+# pull_request_review, and passes CLAUDE_CODE_OAUTH_TOKEN, and the Prompt Guard secrets
+# PROMPT_GUARD_CLIENT_ID, CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# Only members start Claude, but Claude reads the whole issue or pull request, which anyone may have
+# written to: a fork pull request's description, or a comment from outside. The collect job saves
+# the title, the body and every comment, review and review comment, the guard job screens them
+# with Prompt Guard, and Claude only runs on the verdict clean. claude-code-action fetches the
+# thread itself, so a comment posted between the screen and that fetch isn't screened. Prompt Guard
+# is called by tag: its OpenBao role binds the job_workflow_ref claim to refs/tags/v*, which a
+# commit SHA doesn't match.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   actions: read        # claude: read CI results on pull requests
+#   contents: read       # claude: check out the repository
+#   id-token: write      # guard: log in to OpenBao; claude: sign in to the Claude GitHub App
+#   issues: write        # guard: escalate a flag; claude: comment on issues
+#   pull-requests: write # guard: escalate a flag; claude: comment on and open pull requests
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      PROMPT_GUARD_CLIENT_ID:
+        required: false
+      CF_ACCESS_CLIENT_ID:
+        required: false
+      CF_ACCESS_CLIENT_SECRET:
+        required: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The thread as Claude will read it, screened by the guard job.
+  collect:
+    name: Collect Thread
+    # Only @claude mentions from the owner, members and collaborators start a run. The action
+    # additionally checks that the author has write access before Claude does anything.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read # Read the issue and its comments
+      pull-requests: read # Read the pull request's reviews and review comments
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Collect Thread
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          dir="$RUNNER_TEMP/thread"
+          mkdir -p "$dir"
+          # The issues endpoint serves pull requests too, and says which it is.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" > "$RUNNER_TEMP/issue.json"
+          jq -r '.title' "$RUNNER_TEMP/issue.json" > "$dir/title.txt"
+          jq -r '.body // ""' "$RUNNER_TEMP/issue.json" > "$dir/body.txt"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" \
+            --jq '.[] | .body // "" | . + "\n"' > "$dir/comments.txt"
+          if [[ $(jq 'has("pull_request")' "$RUNNER_TEMP/issue.json") == true ]]; then
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/reviews" \
+              --jq '.[] | .body // "" | select(. != "") | . + "\n"' > "$dir/reviews.txt"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/comments" \
+              --jq '.[] | .body // "" | . + "\n"' > "$dir/review-comments.txt"
+          else
+            : > "$dir/reviews.txt"
+            : > "$dir/review-comments.txt"
+          fi
+      - name: Upload Thread
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: claude-thread
+          path: ${{ runner.temp }}/thread
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # A flag or an error leaves the mention unanswered.
+  guard:
+    name: Guard
+    needs: collect
+    permissions:
+      id-token: write # Log in to OpenBao
+      issues: write # Escalate a flagged issue
+      pull-requests: write # Escalate a flagged pull request
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.1.0
+    secrets:
+      PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+    with:
+      artifact: claude-thread
+      files: |
+        title=title.txt
+        body=body.txt
+        comments=comments.txt
+        reviews=reviews.txt
+        review-comments=review-comments.txt
+
+  claude:
+    name: Claude
+    needs: guard
+    if: needs.guard.outputs.verdict == 'clean'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+    permissions:
+      contents: read # Restrict repository contents to read-only to reduce high-impact agency risk
+      pull-requests: write # Let Claude comment on and open pull requests
+      issues: write # Let Claude comment on issues
+      id-token: write # Sign in to the Claude GitHub App
+      actions: read # Let Claude read CI results on pull requests
+    env:
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check Claude Token
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          EXPIRES_AT: ${{ vars.CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT }}
+        run: |
+          # Fails with a clear message instead of letting the action fail on a missing or expired
+          # token. The expiry date is a variable, because a secret's value can't be inspected.
+          renew="Run claude setup-token, then update the CLAUDE_CODE_OAUTH_TOKEN secret and the CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT variable."
+          if [[ "$HAS_TOKEN" != true ]]; then
+            echo "::error::The CLAUDE_CODE_OAUTH_TOKEN secret isn't available to this repository. Add it, or give this repository access to the organization secret."
+            exit 1
+          fi
+          if [[ -z "$EXPIRES_AT" ]]; then
+            echo "::warning::The CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT variable isn't set, so the token's expiry can't be checked"
+            exit 0
+          fi
+          expires=$(date -ud "$EXPIRES_AT" +%s) \
+            || { echo "::error::CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT isn't a valid date: $EXPIRES_AT"; exit 1; }
+          days=$(( (expires - $(date -u +%s)) / 86400 ))
+          if (( days < 0 )); then
+            echo "::error::The Claude token expired on $EXPIRES_AT. $renew"
+            exit 1
+          elif (( days < 30 )); then
+            echo "::warning::The Claude token expires on $EXPIRES_AT (in $days days). $renew"
+          fi
+      - name: Run Claude
+        uses: step-security/claude-code-action@v1.0.238
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
