@@ -10,11 +10,11 @@ workflows:
     '.github/workflows/_claude.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
-        - 'step-security/claude-code-action@v1.0.238'
+        - 'step-security/claude-code-action@v1.0.268'
         - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_explain.yml':
         - 'actions/github-script@v9.0.0'
-        - 'step-security/claude-code-action@v1.0.238'
+        - 'step-security/claude-code-action@v1.0.268'
         - 'step-security/harden-runner@v2.22.3'
     '.github/workflows/_label-sync.yml':
         - 'actions/checkout@v7.0.1'
@@ -24,7 +24,7 @@ workflows:
         - 'actions/download-artifact@v8.0.2'
         - 'actions/github-script@v9.0.0'
         - 'actions/upload-artifact@v7.0.2'
-        - 'step-security/claude-code-action@v1.0.238'
+        - 'step-security/claude-code-action@v1.0.268'
         - 'step-security/harden-runner@v2.22.3'
     '.github/workflows/_renovate.yml':
         - 'actions/checkout@v7.0.1'
@@ -33,11 +33,11 @@ workflows:
     '.github/workflows/_screen.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
-        - 'step-security/claude-code-action@v1.0.238'
+        - 'step-security/claude-code-action@v1.0.268'
         - 'step-security/harden-runner@v2.22.3'
     '.github/workflows/_triage.yml':
         - 'actions/checkout@v7.0.1'
-        - 'step-security/claude-code-action@v1.0.238'
+        - 'step-security/claude-code-action@v1.0.268'
         - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_zizmor.yml':
         - 'actions/checkout@v7.0.1'
@@ -84,9 +84,9 @@ dependencies:
         commit: 'sha1-9b3254085494b55a0f7c4c2b3d2d52cc712ce370'
         owner_id: 9919
         repo_id: 259445878
-    'step-security/claude-code-action@v1.0.238':
-        ref: 'v1.0.238'
-        commit: 'sha1-f921413b67d52bb040358b3c180b45f823cad94f'
+    'step-security/claude-code-action@v1.0.268':
+        ref: 'v1.0.268'
+        commit: 'sha1-c68dfb24263227dd312f4c6a5ed0b215a18b4ba6'
         owner_id: 88700172
         repo_id: 1091477204
         uses:

@@ -303,7 +303,7 @@ jobs:
       - name: Classify
         id: claude
         if: steps.labels.outputs.labels != '[]'
-        uses: step-security/claude-code-action@v1.0.238
+        uses: step-security/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -401,7 +401,7 @@ jobs:
       # Read-only: Claude returns the title as structured output, and the apply job applies it.
       - name: Write Title
         id: claude
-        uses: step-security/claude-code-action@v1.0.238
+        uses: step-security/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -595,7 +595,7 @@ jobs:
       # once the screen passed.
       - name: Write Description
         id: claude
-        uses: step-security/claude-code-action@v1.0.238
+        uses: step-security/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
