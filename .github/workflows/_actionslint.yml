@@ -92,6 +92,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint GitHub Actions Workflows
-        uses: kjanat/actionlint@v1.17.0
+        uses: kjanat/actionlint@v1.17.1
         with:
           review: true
