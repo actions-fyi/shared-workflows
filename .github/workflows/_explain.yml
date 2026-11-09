@@ -86,7 +86,7 @@ jobs:
       key: ${{ steps.resolve.outputs.key }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # workflow_run.pull_requests is empty for fork pull requests, so the pull request is found by
@@ -152,7 +152,7 @@ jobs:
       logs: ${{ steps.fetch.outputs.logs }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # A fork pull request controls what its run prints, so the logs are only passed on, never
@@ -214,7 +214,7 @@ jobs:
       body: ${{ steps.read.outputs.body }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # No checkout: the workspace holds only the logs, so Claude can read nothing else from the
@@ -339,7 +339,7 @@ jobs:
       pull-requests: write # Create, update and unminimize the comment
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       # Claude's text comes in through env only when it was screened, and the script never prints
@@ -422,7 +422,7 @@ jobs:
       pull-requests: write # Minimize the comment
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.3
+        uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
       - name: Resolve Report
