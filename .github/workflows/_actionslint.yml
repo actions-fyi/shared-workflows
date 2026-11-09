@@ -1,0 +1,97 @@
+name: Lint GitHub Actions
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the actionlint check of the org ruleset's Lint GitHub
+# Actions. Workflows in other repositories, ruleset workflows included, call it by full path and
+# tag: in a ruleset workflow, GitHub resolves `$/` against the target repository, where this file
+# doesn't exist. This repository's own caller uses `$/`. It runs as part of the caller's run, in the
+# target repository's context: the caller's event, token and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
+# it must also run on merge_group.
+#
+# Callers can't filter by paths: a ruleset ignores paths filters, and a required check that never
+# runs would block merging. So the workflow always runs, and the changes job decides whether the
+# pull request or merge group changes a workflow, an action, or the actionlint configuration. If
+# not, the lint job is skipped, and the run still succeeds, because the changes job does.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   contents: read        # changes: compare the changes; actions: read the workflow files
+#   pull-requests: write  # actions: post findings as review comments
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  changes:
+    name: Changed Workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Compare the changes against the base
+    outputs:
+      lint: ${{ steps.changes.outputs.lint }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      # A three-dot compare lists what the pull request changes since it branched off; for a merge
+      # group, the base is an ancestor of the head, so it lists everything the group adds. The API
+      # lists at most 300 files, and a larger or unlistable change is linted rather than guessed.
+      - name: Find Changed Workflows
+        id: changes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          lint() {
+            echo "::notice::$1"
+            echo "lint=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          compare="$RUNNER_TEMP/compare.json"
+          gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA" > "$compare" \
+            || lint "The changed files couldn't be listed, so the workflows are linted."
+          (( $(jq '.files // [] | length' "$compare") < 300 )) \
+            || lint "Too many changed files to list, so the workflows are linted."
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/* | .github/actionlint.yaml | .github/actionlint.yml \
+                | action.yml | action.yaml | */action.yml | */action.yaml)
+                lint "$path changed, so the workflows are linted."
+                ;;
+            esac
+          done < <(jq -r '.files // [] | .[] | .filename, (.previous_filename // empty)' "$compare")
+          echo "::notice::No workflow, action or actionlint configuration changed. Nothing to lint."
+
+  actions:
+    name: GitHub Actions
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
+    runs-on: ubuntu-latest
+    # github.ref is refs/pull/<number>/merge for a pull request and a unique
+    # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, so the two
+    # never share a group.
+    concurrency:
+      group: actionslint-${{ github.ref }}
+    permissions:
+      contents: read # Read workflow files
+      pull-requests: write # Post findings as review comments
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint GitHub Actions Workflows
+        uses: kjanat/actionlint@v1.17.0
+        with:
+          review: true

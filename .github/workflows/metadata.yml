@@ -1,0 +1,20 @@
+name: Check Metadata
+# This repository's caller of its own shared workflow _metadata.yml, which holds the check; see
+# there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
+# ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups.
+#
+# pr-metadata.yml listens to runs of this name, and _pr-metadata.yml re-runs them after fixing a
+# title, so the name stays the same as the org ruleset's.
+on:
+  pull_request:
+  merge_group:
+
+permissions: {}
+
+jobs:
+  title:
+    name: Metadata
+    # What the title job of _metadata.yml declares; a called job can't get more.
+    permissions:
+      pull-requests: read # Read the title and commits
+    uses: $/.github/workflows/_metadata.yml
