@@ -37,8 +37,10 @@ name: Check Actions Lockfile
 # Outside pull requests, the fix job stays skipped: a failed check only fails the run.
 #
 # The check job fails when .github/workflows/actions.lock is out of sync with the workflows, or a
-# locked pin no longer verifies upstream. Repositories without a lockfile aren't onboarded and are
-# skipped.
+# locked pin no longer verifies upstream. It also fails when there is no lockfile although the
+# workflows use an action it would lock, so the fix job onboards the repository by adding one. A
+# repository whose workflows only call reusable workflows, which the lockfile can't lock, needs
+# none, and is skipped; so is one without workflows.
 #
 # When it fails on a pull request from a branch of the same repository, the fix job regenerates the
 # lockfile and commits the result to the branch. That includes Renovate branches: Renovate updates
@@ -152,20 +154,35 @@ jobs:
         id: lockfile
         run: |
           if [[ -f .github/workflows/actions.lock ]]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "state=found" >> "$GITHUB_OUTPUT"
+          elif [[ -d .github/workflows ]]; then
+            echo "state=missing" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::No .github/workflows/actions.lock, so this repository's workflows aren't onboarded. Nothing to check."
+            echo "::notice::No .github/workflows, so there is nothing to lock."
           fi
       - name: Install gh-actions-lock
-        if: steps.lockfile.outputs.found == 'true'
+        if: steps.lockfile.outputs.state != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-actions-lock --pin "$GH_ACTIONS_LOCK_VERSION"
       - name: Verify Lockfile
-        if: steps.lockfile.outputs.found == 'true'
+        if: steps.lockfile.outputs.state == 'found'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh actions-lock --verify
+      # Generates the lockfile the repository would need, only to see whether it locks anything:
+      # without a dependencies key, every workflow only calls reusable workflows. Nothing is kept.
+      - name: Check Missing Lockfile
+        if: steps.lockfile.outputs.state == 'missing'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh actions-lock
+          if grep -q '^dependencies:' .github/workflows/actions.lock; then
+            echo "::error::No .github/workflows/actions.lock, although the workflows use actions. On a pull request from a branch of this repository, the fix job adds it."
+            exit 1
+          fi
+          echo "::notice::No .github/workflows/actions.lock, and the workflows use no action it would lock, so none is needed."
 
   fix:
     name: Fix Actions Lockfile
