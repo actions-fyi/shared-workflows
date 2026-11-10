@@ -1,0 +1,190 @@
+name: CodeQL
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the CodeQL analysis that replaces CodeQL's default
+# setup. Workflows in other repositories, ruleset workflows included, call it by full path and tag:
+# in a ruleset workflow, GitHub resolves `$/` against the target repository, where this file
+# doesn't exist. This repository's own codeql.yml calls it with `$/`. It runs as part of the
+# caller's run, in the target repository's context: the caller's event, token and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# Why not default setup: it can't exclude a query, and actions/unpinned-tag flags every action
+# used by tag, although actions.lock pins each of them, and a workflow whose actions it doesn't
+# list fails at startup. zizmor's unpinned-uses audit covers the rest with a finer policy.
+#
+# In private and internal repositories, code scanning needs GitHub Code Security, so the analysis
+# is skipped there: the languages job says so and returns no matrix, and the analyze and upload
+# jobs skip. The run still succeeds, through the languages job, so it satisfies a required check.
+#
+# Default setup and this workflow exclude each other: while default setup is enabled for a
+# repository, code scanning rejects the results uploaded here. Once it is off, only what this
+# workflow analyzes is scanned, so it analyzes every CodeQL language the repository contains:
+# actions always, the others as the languages API reports them, or the languages input instead.
+# Interpreted languages, Java and C# need no build. C and C++, Go, Kotlin and Swift need their
+# code compiled, which autobuild attempts without repository-specific steps; a repository whose
+# build autobuild can't do keeps its own CodeQL workflow instead of calling this one.
+#
+# The analyze job runs the repository's code: autobuild runs its build, and with it whatever its
+# dependencies run, which a pull request, a Renovate update among them, can change. So it holds a
+# read-only token and uploads nothing. It saves the results as an artifact, and the upload job,
+# which runs nothing from the repository, uploads them with security-events: write. A build
+# therefore never holds that token: it can't dismiss alerts or call the code scanning API. It
+# still runs in the job that writes the results, so it can alter what that job saves, and with it
+# the analysis of its own pull request. That's the limit of what a job that builds untrusted code
+# can be trusted with; a check in a later step of the same job would run after the build too.
+#
+# Each language uploads under the category /language:<language>, which doesn't depend on the
+# caller, so code scanning compares a pull request with the base branch even when the two were
+# analyzed through different callers.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   contents: read         # languages: read the repository's languages; analyze: check it out
+#   security-events: write # upload: upload the results to code scanning
+#   actions: read          # upload: let CodeQL read the workflow run
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: >-
+          Comma-separated CodeQL languages to analyze instead of the detected ones, e.g.
+          actions,javascript-typescript.
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  languages:
+    name: Languages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Read the repository's languages
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Build Matrix
+        id: matrix
+        uses: actions/github-script@v9.0.0
+        env:
+          LANGUAGES: ${{ inputs.languages }}
+        with:
+          script: |
+            // The CodeQL language each language of the languages API is analyzed as.
+            const codeql = {
+              'C': 'c-cpp', 'C++': 'c-cpp', 'C#': 'csharp', 'Go': 'go',
+              'Java': 'java-kotlin', 'Kotlin': 'java-kotlin',
+              'JavaScript': 'javascript-typescript', 'TypeScript': 'javascript-typescript',
+              'Python': 'python', 'Ruby': 'ruby', 'Rust': 'rust', 'Swift': 'swift',
+            };
+            if (context.payload.repository?.private) {
+              core.notice('Code scanning needs GitHub Code Security in a private or internal repository, so CodeQL is skipped.');
+              core.setOutput('matrix', '');
+              return;
+            }
+            const supported = new Set(['actions', ...Object.values(codeql)]);
+            // Languages whose code must be compiled. Java needs no build, but Kotlin does.
+            const compiled = new Set(['c-cpp', 'go', 'swift']);
+            const build = new Set();
+            let languages;
+            const requested = process.env.LANGUAGES.split(',').map((l) => l.trim()).filter(Boolean);
+            if (requested.length > 0) {
+              const unknown = requested.filter((l) => !supported.has(l));
+              if (unknown.length > 0) {
+                core.setFailed(`Not a CodeQL language: ${unknown.join(', ')}`);
+                return;
+              }
+              languages = requested;
+            } else {
+              const { data } = await github.rest.repos.listLanguages(context.repo);
+              core.info(`Languages API: ${Object.keys(data).join(', ') || 'none'}`);
+              languages = ['actions'];
+              for (const name of Object.keys(data)) {
+                if (!codeql[name]) continue;
+                languages.push(codeql[name]);
+                if (name === 'Kotlin') build.add('java-kotlin');
+              }
+            }
+            const include = [...new Set(languages)].sort().map((language) => ({
+              language,
+              'build-mode': compiled.has(language) || build.has(language) ? 'autobuild' : 'none',
+              // CodeQL analyzes Swift only on macOS.
+              runner: language === 'swift' ? 'macos-latest' : 'ubuntu-latest',
+            }));
+            core.info(`Matrix: ${JSON.stringify(include)}`);
+            core.setOutput('matrix', JSON.stringify({ include }));
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: languages
+    if: needs.languages.outputs.matrix != ''
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read # Check out the repository
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config: |
+            query-filters:
+              - exclude:
+                  id: actions/unpinned-tag
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4.39.3
+        with:
+          category: /language:${{ matrix.language }}
+          upload: never
+          output: ${{ runner.temp }}/codeql-results
+      - name: Save Results
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: codeql-results-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql-results
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # Runs nothing from the repository; see the analyze job. The category is in the results already.
+  upload:
+    name: Upload (${{ matrix.language }})
+    needs: [languages, analyze]
+    if: ${{ !cancelled() && needs.languages.result == 'success' && needs.languages.outputs.matrix != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # Upload the results to code scanning
+      actions: read # Let CodeQL read the workflow run
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Download Results
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: codeql-results-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql-results
+      - name: Upload Results
+        uses: github/codeql-action/upload-sarif@v4.39.3
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-results
