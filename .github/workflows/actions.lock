@@ -22,6 +22,11 @@ workflows:
         - 'actions/upload-artifact@v7.0.2'
         - 'step-security/claude-code-action@v1.0.268'
         - 'step-security/harden-runner@v2.22.4'
+    '.github/workflows/_codeql.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'actions/github-script@v9.0.0'
+        - 'github/codeql-action@v4.39.3'
+        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_explain.yml':
         - 'actions/github-script@v9.0.0'
         - 'step-security/claude-code-action@v1.0.268'
@@ -63,6 +68,7 @@ workflows:
     '.github/workflows/auto-label.yml': []
     '.github/workflows/claude-review.yml': []
     '.github/workflows/claude.yml': []
+    '.github/workflows/codeql.yml': []
     '.github/workflows/label-sync.yml': []
     '.github/workflows/metadata.yml': []
     '.github/workflows/pr-metadata.yml': []
@@ -104,6 +110,11 @@ dependencies:
     'github/codeql-action@9b3254085494b55a0f7c4c2b3d2d52cc712ce370':
         ref: 'v4.39.1'
         commit: 'sha1-9b3254085494b55a0f7c4c2b3d2d52cc712ce370'
+        owner_id: 9919
+        repo_id: 259445878
+    'github/codeql-action@v4.39.3':
+        ref: 'v4.39.3'
+        commit: 'sha1-33d7b85da1a04171e211befe2c739303b9a4c066'
         owner_id: 9919
         repo_id: 259445878
     'kjanat/actionlint@v1.17.1':
