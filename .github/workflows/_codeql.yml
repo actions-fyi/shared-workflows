@@ -20,6 +20,12 @@ name: CodeQL
 # code compiled, which autobuild attempts without repository-specific steps; a repository whose
 # build autobuild can't do keeps its own CodeQL workflow instead of calling this one.
 #
+# The analyze job runs the repository's code: autobuild runs its build, and with it whatever its
+# dependencies run, which a pull request, a Renovate update among them, can change. So it holds a
+# read-only token and uploads nothing. It saves the results as an artifact, and the upload job,
+# which runs nothing from the repository, uploads them with security-events: write. A build can
+# therefore neither upload results of its own nor dismiss alerts.
+#
 # Each language uploads under the category /language:<language>, which doesn't depend on the
 # caller, so code scanning compares a pull request with the base branch even when the two were
 # analyzed through different callers.
@@ -27,8 +33,8 @@ name: CodeQL
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
 #   contents: read         # languages: read the repository's languages; analyze: check it out
-#   security-events: write # analyze: upload the results to code scanning
-#   actions: read          # analyze: let CodeQL read the workflow run
+#   security-events: write # upload: upload the results to code scanning
+#   actions: read          # upload: let CodeQL read the workflow run
 on:
   workflow_call:
     inputs:
@@ -107,8 +113,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read # Check out the repository
-      security-events: write # Upload the results to code scanning
-      actions: read # Let CodeQL read the workflow run
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
@@ -134,3 +138,40 @@ jobs:
         uses: github/codeql-action/analyze@v4.39.3
         with:
           category: /language:${{ matrix.language }}
+          upload: never
+          output: ${{ runner.temp }}/codeql-results
+      - name: Save Results
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: codeql-results-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql-results
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # Runs nothing from the repository; see the analyze job. The category is in the results already.
+  upload:
+    name: Upload (${{ matrix.language }})
+    needs: [languages, analyze]
+    if: ${{ !cancelled() && needs.languages.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # Upload the results to code scanning
+      actions: read # Let CodeQL read the workflow run
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Download Results
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: codeql-results-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql-results
+      - name: Upload Results
+        uses: github/codeql-action/upload-sarif@v4.39.3
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-results
