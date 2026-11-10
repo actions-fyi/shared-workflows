@@ -59,8 +59,9 @@ jobs:
         with:
           persist-credentials: false
       # Any ref is accepted, as long as it is one. Actions are pinned by actions.lock, which the org
-      # ruleset enforces in every repository, and a workflow using an action it doesn't list fails
-      # at startup; composite actions are locked with the actions they call. The lockfile can't
+      # ruleset's lockfile check adds to every repository whose workflows use an action, and a
+      # workflow using an action it doesn't list fails at startup; composite actions are locked
+      # with the actions they call. The lockfile can't
       # lock reusable workflows, but only actions-fyi's are used, and those may be called by tag:
       # the OpenBao and Octo STS trust policies bind the tag ref, which a commit SHA doesn't match.
       # zizmor's patterns match a repository, not whether it's called as an action or a workflow,
