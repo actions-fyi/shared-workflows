@@ -22,6 +22,14 @@ name: Audit
 # possible, callers use the same file name, zizmor.yml, and the same job id, zizmor.
 on:
   workflow_call:
+    inputs:
+      zizmor-version:
+        description: >-
+          The zizmor version to run instead of ZIZMOR_VERSION below, e.g. 1.31.0. zizmor-action
+          must ship a lock for it. Renovate doesn't update it.
+        type: string
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -69,7 +77,7 @@ jobs:
       - name: Run zizmor 🌈
         uses: zizmorcore/zizmor-action@v0.8.1
         with:
-          version: ${{ env.ZIZMOR_VERSION }}
+          version: ${{ inputs.zizmor-version || env.ZIZMOR_VERSION }}
           config: ${{ steps.config.outputs.path }}
           persona: pedantic
           min-severity: low
