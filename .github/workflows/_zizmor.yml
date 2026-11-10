@@ -22,8 +22,22 @@ name: Audit
 # possible, callers use the same file name, zizmor.yml, and the same job id, zizmor.
 on:
   workflow_call:
+    inputs:
+      zizmor-version:
+        description: >-
+          The zizmor version to run instead of ZIZMOR_VERSION below, e.g. 1.31.0. zizmor-action
+          must ship a lock for it. Renovate doesn't update it.
+        type: string
+        required: false
+        default: ""
 
 permissions: {}
+
+# zizmor-action only installs the versions it ships a hash-pinned lock for, so a new zizmor
+# release may need a newer zizmor-action first. Renovate groups the two in one pull request.
+env:
+  # renovate: datasource=pypi depName=zizmor
+  ZIZMOR_VERSION: 1.31.1
 
 jobs:
   zizmor:
@@ -63,6 +77,7 @@ jobs:
       - name: Run zizmor 🌈
         uses: zizmorcore/zizmor-action@v0.8.1
         with:
+          version: ${{ inputs.zizmor-version || env.ZIZMOR_VERSION }}
           config: ${{ steps.config.outputs.path }}
           persona: pedantic
           min-severity: low
