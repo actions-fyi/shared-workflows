@@ -58,9 +58,12 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # actions-fyi's own reusable workflows may be called by tag: the OpenBao and Octo STS
-      # trust policies bind the tag ref, which a commit SHA doesn't match. Every other action and
-      # workflow still needs a commit SHA, or a lockfile entry.
+      # Any ref is accepted, as long as it is one. Actions are pinned by actions.lock, which the org
+      # ruleset enforces in every repository, and a workflow using an action it doesn't list fails
+      # at startup; composite actions are locked with the actions they call. The lockfile can't
+      # lock reusable workflows, but only actions-fyi's are used, and those may be called by tag:
+      # the OpenBao and Octo STS trust policies bind the tag ref, which a commit SHA doesn't match.
+      # zizmor before 1.32 doesn't read the lockfile, so hash-pin would flag every action by tag.
       - name: Write zizmor Config
         id: config
         run: |
@@ -70,8 +73,7 @@ jobs:
             unpinned-uses:
               config:
                 policies:
-                  "actions-fyi/*": ref-pin
-                  "*": hash-pin
+                  "*": ref-pin
           EOF
           echo "path=$config" >> "$GITHUB_OUTPUT"
       - name: Run zizmor 🌈
