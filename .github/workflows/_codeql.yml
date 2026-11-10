@@ -35,7 +35,8 @@ name: CodeQL
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   contents: read         # languages: read the repository's languages; analyze: check it out
+#   contents: read         # languages: read the repository's languages; analyze: check it out;
+#                          # upload: required by upload-sarif in private repositories
 #   security-events: write # upload: upload the results to code scanning
 #   actions: read          # upload: let CodeQL read the workflow run
 on:
@@ -161,6 +162,7 @@ jobs:
     permissions:
       security-events: write # Upload the results to code scanning
       actions: read # Let CodeQL read the workflow run
+      contents: read # Required by upload-sarif in private repositories
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
