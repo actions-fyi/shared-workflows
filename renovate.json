@@ -1,4 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>actions-fyi/.github", "customManagers:githubActionsVersions"]
+  "extends": ["github>actions-fyi/.github", "customManagers:githubActionsVersions"],
+  "packageRules": [
+    {
+      "description": "zizmor-action only installs the zizmor versions it ships a lock for, so update both together",
+      "matchPackageNames": ["zizmor", "zizmorcore/zizmor-action"],
+      "groupName": "zizmor"
+    },
+    {
+      "description": "zizmor 1.32.0 can't parse an actions.lock without dependencies: https://github.com/zizmorcore/zizmor/issues/2542",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["zizmor"],
+      "allowedVersions": "!/^1\\.32\\.0$/"
+    }
+  ]
 }

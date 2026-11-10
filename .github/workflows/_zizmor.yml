@@ -25,6 +25,12 @@ on:
 
 permissions: {}
 
+# zizmor-action only installs the versions it ships a hash-pinned lock for, so a new zizmor
+# release may need a newer zizmor-action first. Renovate groups the two in one pull request.
+env:
+  # renovate: datasource=pypi depName=zizmor
+  ZIZMOR_VERSION: 1.31.1
+
 jobs:
   zizmor:
     name: CI Config
@@ -63,6 +69,7 @@ jobs:
       - name: Run zizmor 🌈
         uses: zizmorcore/zizmor-action@v0.8.1
         with:
+          version: ${{ env.ZIZMOR_VERSION }}
           config: ${{ steps.config.outputs.path }}
           persona: pedantic
           min-severity: low
