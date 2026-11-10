@@ -63,6 +63,8 @@ jobs:
       # at startup; composite actions are locked with the actions they call. The lockfile can't
       # lock reusable workflows, but only actions-fyi's are used, and those may be called by tag:
       # the OpenBao and Octo STS trust policies bind the tag ref, which a commit SHA doesn't match.
+      # zizmor's patterns match a repository, not whether it's called as an action or a workflow,
+      # so a third-party reusable workflow called by tag or branch passes too. That gap is accepted.
       # zizmor before 1.32 doesn't read the lockfile, so hash-pin would flag every action by tag.
       - name: Write zizmor Config
         id: config
