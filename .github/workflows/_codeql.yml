@@ -23,8 +23,11 @@ name: CodeQL
 # The analyze job runs the repository's code: autobuild runs its build, and with it whatever its
 # dependencies run, which a pull request, a Renovate update among them, can change. So it holds a
 # read-only token and uploads nothing. It saves the results as an artifact, and the upload job,
-# which runs nothing from the repository, uploads them with security-events: write. A build can
-# therefore neither upload results of its own nor dismiss alerts.
+# which runs nothing from the repository, uploads them with security-events: write. A build
+# therefore never holds that token: it can't dismiss alerts or call the code scanning API. It
+# still runs in the job that writes the results, so it can alter what that job saves, and with it
+# the analysis of its own pull request. That's the limit of what a job that builds untrusted code
+# can be trusted with; a check in a later step of the same job would run after the build too.
 #
 # Each language uploads under the category /language:<language>, which doesn't depend on the
 # caller, so code scanning compares a pull request with the base branch even when the two were
