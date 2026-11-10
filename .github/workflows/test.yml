@@ -15,9 +15,11 @@ name: Test
 #   calls it checks.
 #
 # Pull requests from this repository only: fork pull requests get no secrets, so every job skips
-# on them, and a skipped Screen Verdicts counts as passed.
+# on them, and a skipped Screen Verdicts counts as passed. The same holds in the merge queue, which
+# waits for every required check: the tests ran on the pull request before it was queued.
 on:
   pull_request:
+  merge_group:
 
 permissions: {}
 
