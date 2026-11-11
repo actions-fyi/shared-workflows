@@ -12,11 +12,11 @@ name: Validate
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   contents: read        # renovate, upstream, suggest: read the Renovate configs
-#   pull-requests: write  # suggest: post the suggestions
+#   contents: read   # renovate, upstream, fix: read the Renovate configs
+#   id-token: write  # fix: exchange the job's OIDC token with Octo STS
 #
 # Events: the renovate and upstream jobs run on any event, e.g. pull_request, merge_group and push.
-# The suggest job only runs on pull requests from a branch of the same repository.
+# The fix job only runs on pull requests from a branch of the same repository.
 on:
   workflow_call:
 
@@ -110,79 +110,140 @@ jobs:
                 else "\"\($upstream)\" in \"extends\"" end) | join(" and "))' <<< "$MISSING"
           exit 1
 
-  suggest:
-    name: Suggest Renovate Upstream
-    # Suggests the fix on the pull request instead of committing it. The author applies it with
-    # "Commit suggestion", which GitHub signs as their commit and which, unlike a commit made with
-    # the GITHUB_TOKEN, starts the checks again. Fork pull requests get a read-only token, so they
-    # only see the failed check.
+  # Commits the fix to the pull request's branch, so the author doesn't have to. Only on pull
+  # requests from a branch of this repository: a fork's pull request gets no OIDC token, so it
+  # keeps the failed check and the upstream job's annotation on the file.
+  #
+  # Nothing is checked out. The job reads each config at the pull request's head through the API,
+  # adds only the missing lines, and commits the files with createCommitOnBranch, which GitHub
+  # signs, and which only lands if the branch didn't move since the head it read. The commit can't
+  # use the workflow's own token, because GitHub starts no workflows for its pushes, so the new
+  # head would wait for its required checks forever. It uses a short-lived token from Octo STS
+  # instead, granted by renovate-upstream.sts.yaml in .github/chainguard/ of actions-fyi/.github,
+  # which accepts released versions of this file, at refs/tags/v..., so callers call it by tag.
+  # This repository's own caller runs a pull request's copy and gets no token; its configs extend
+  # the upstream anyway.
+  #
+  # The run itself stays failed, because the commit it checked is missing the upstream; the fix
+  # commit gets its own run. Renovate must list the commit's author, octo-sts[bot], in
+  # gitIgnoredAuthors, or it stops updating the branch.
+  fix:
+    name: Fix Renovate Upstream
     needs: upstream
     if: >-
-      !cancelled() && needs.upstream.outputs.missing != '[]' && github.event_name == 'pull_request'
+      !cancelled() && needs.upstream.outputs.missing != '' && needs.upstream.outputs.missing != '[]'
+      && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    concurrency:
-      group: renovate-suggest-${{ github.ref }}
     permissions:
-      contents: read # Read the Renovate configs
-      pull-requests: write # Post the suggestions
+      contents: read # Read the Renovate configs and the head commit
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    env:
+      # Marks the fix commit, so a fix that doesn't settle the configs isn't committed again.
+      FIX_TRAILER: "Renovate-Upstream-Fixed-By: ${{ github.workflow }}"
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
-      - name: Checkout Repository
-        uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - name: Suggest Missing Upstream
+      # Inserts the missing lines into the file's own text, so the rest keeps its formatting, and
+      # checks that the result parses to the intended config. If it doesn't, the file is written
+      # out again with two-space indentation.
+      - name: Build Fix
+        id: fix
+        uses: actions/github-script@v9.0.0
         env:
-          GH_TOKEN: ${{ github.token }}
           MISSING: ${{ needs.upstream.outputs.missing }}
-          PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const missing = JSON.parse(process.env.MISSING);
+            const { SCHEMA_URL: url, UPSTREAM: upstream, HEAD_SHA: ref, FIX_TRAILER: trailer } = process.env;
+            const { data: head } = await github.rest.repos.getCommit({ ...context.repo, ref });
+            if (head.commit.message.split('\n').includes(trailer)) {
+              core.setFailed('The head commit is already a fix, but the configs still miss the upstream. Nothing was committed, to avoid a loop.');
+              return;
+            }
+            const canonical = (v) => Array.isArray(v) ? v.map(canonical)
+              : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]))
+              : v;
+            // Inserts text right after the opening brace or bracket at index, in the indentation
+            // of the next line, or inline when the next element is on the same line.
+            const insertAfter = (text, index, entry) => {
+              const rest = text.slice(index);
+              const nextLine = rest.match(/^[ \t]*\r?\n([ \t]*)\S/);
+              if (nextLine) return text.slice(0, index) + `\n${nextLine[1]}${entry},` + rest;
+              const closing = /^\s*[\]}]/.test(rest);
+              return text.slice(0, index) + (closing ? entry : `${entry}, `) + rest;
+            };
+            const additions = [];
+            for (const { file, missing: keys } of missing) {
+              const { data } = await github.rest.repos.getContent({ ...context.repo, path: file, ref });
+              // jq reads past a byte order mark, JSON.parse doesn't; the fix drops it.
+              const original = Buffer.from(data.content, 'base64').toString('utf8').replace(/^\uFEFF/, '');
+              const config = JSON.parse(original);
+              const wanted = { ...config };
+              if (keys.includes('$schema')) wanted.$schema = url;
+              if (keys.includes('extends')) wanted.extends = [upstream, ...(config.extends ?? [])];
+              let text = original;
+              if (keys.includes('extends')) {
+                const at = text.match(/"extends"\s*:\s*\[/);
+                text = at
+                  ? insertAfter(text, at.index + at[0].length, JSON.stringify(upstream))
+                  : insertAfter(text, text.indexOf('{') + 1, `"extends": [${JSON.stringify(upstream)}]`);
+              }
+              if (keys.includes('$schema')) {
+                text = /"\$schema"\s*:/.test(text)
+                  ? text.replace(/("\$schema"\s*:\s*)"[^"]*"/, `$1${JSON.stringify(url)}`)
+                  : insertAfter(text, text.indexOf('{') + 1, `"$schema": ${JSON.stringify(url)}`);
+              }
+              let same = false;
+              try {
+                same = JSON.stringify(canonical(JSON.parse(text))) === JSON.stringify(canonical(wanted));
+              } catch {}
+              if (!same) {
+                core.warning(`Couldn't keep the formatting of ${file}, so it's written out again.`, { file });
+                text = JSON.stringify({ ...(wanted.$schema ? { $schema: wanted.$schema } : {}), ...wanted }, null, 2) + '\n';
+              }
+              core.info(`${file}: adds ${keys.join(' and ')}`);
+              additions.push({ path: file, contents: Buffer.from(text).toString('base64') });
+            }
+            core.setOutput('additions', JSON.stringify(additions));
+      # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
+      # pull request can't add or weaken them. The token is revoked when the job ends.
+      - name: Get Fix Token
+        if: steps.fix.outputs.additions != ''
+        id: sts
+        continue-on-error: true
+        uses: step-security/octo-sts-action@v1.1.1
+        with:
+          scope: ${{ github.repository_owner }}
+          identity: renovate-upstream
+      - name: Report Missing Fix Token
+        if: steps.fix.outputs.additions != '' && steps.sts.outcome != 'success'
         run: |
-          # A suggestion can only replace lines that are part of the pull request's diff. When one
-          # hunk covers the whole config (a new file, or a small one that was edited), the fix is a
-          # suggestion on the file. Otherwise it's a comment with the fixed file. Each comment
-          # carries a marker with a hash of the fix, so a later push doesn't post it again.
-          changed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | {filename, patch}' | jq -sc .)
-          posted=$( { gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" --jq '.[].body'
-                      gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --jq '.[].body'; } \
-                    | grep -o '<!-- renovate-upstream [^ ]* -->' || true)
-          code='`'
-          fence='```'
-          jq -c '.[]' <<< "$MISSING" | while read -r entry; do
-            file=$(jq -r '.file' <<< "$entry")
-            what=$(jq -r --arg upstream "$UPSTREAM" '.missing | map(
-              if . == "$schema" then "`$schema`" else "`\($upstream)` in `extends`" end) | join(" and ")' <<< "$entry")
-            fixed=$(jq --argjson entry "$entry" --arg url "$SCHEMA_URL" --arg upstream "$UPSTREAM" '
-              (if $entry.missing | any(. == "$schema") then {"$schema": $url} + del(.["$schema"]) else . end)
-              | (if $entry.missing | any(. == "extends") then .extends = [$upstream] + (.extends // []) else . end)
-            ' "$file")
-            marker="<!-- renovate-upstream $(sha256sum <<< "$file:$fixed" | cut -c1-16) -->"
-            if grep -qF "$marker" <<< "$posted"; then
-              echo "::notice file=$file::The fix for $file was already suggested"
-              continue
-            fi
-            lines=$(awk 'END { print NR }' "$file")
-            covered=$(jq -r --arg f "$file" '.[] | select(.filename == $f) | .patch // empty' <<< "$changed" \
-              | sed -nE 's/^@@ -[0-9,]+ \+([0-9]+)(,([0-9]+))? @@.*/\1 \3/p' \
-              | awk -v n="$lines" '{ len = ($2 == "" ? 1 : $2); if ($1 <= 1 && $1 + len - 1 >= n) ok = 1 } END { print ok + 0 }')
-            if (( covered )); then
-              body=$(printf '%s is missing %s. Apply the suggestion to fix it.\n\n%ssuggestion\n%s\n%s\n%s' \
-                "$code$file$code" "$what" "$fence" "$fixed" "$fence" "$marker")
-              jq -n --arg body "$body" --arg path "$file" --arg sha "$HEAD_SHA" --argjson lines "$lines" '
-                {body: $body, path: $path, commit_id: $sha, side: "RIGHT", line: $lines}
-                + (if $lines > 1 then {start_line: 1, start_side: "RIGHT"} else {} end)' \
-                | gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" --input - > /dev/null
-              echo "::notice file=$file::Suggested the fix for $file"
-            else
-              body=$(printf "%s is missing %s. It isn't changed in this pull request, so GitHub can't offer the fix as a suggestion. Replace its content with:\n\n%sjson\n%s\n%s\n%s" \
-                "$code$file$code" "$what" "$fence" "$fixed" "$fence" "$marker")
-              jq -n --arg body "$body" '{body: $body}' \
-                | gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --input - > /dev/null
-              echo "::notice file=$file::Posted the fix for $file as a comment"
-            fi
-          done
+          echo "::error::Octo STS granted no token to commit the fix. Add the missing lines the Renovate Upstream job names and push."
+          exit 1
+      - name: Commit Fix
+        if: steps.fix.outputs.additions != '' && steps.sts.outcome == 'success'
+        uses: actions/github-script@v9.0.0
+        env:
+          ADDITIONS: ${{ steps.fix.outputs.additions }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          github-token: ${{ steps.sts.outputs.token }}
+          script: |
+            const { createCommitOnBranch: { commit } } = await github.graphql(`
+              mutation($input: CreateCommitOnBranchInput!) {
+                createCommitOnBranch(input: $input) { commit { oid } }
+              }`, { input: {
+                branch: { repositoryNameWithOwner: `${context.repo.owner}/${context.repo.repo}`, branchName: process.env.HEAD_REF },
+                expectedHeadOid: process.env.HEAD_SHA,
+                message: {
+                  headline: 'chore(renovate): extend the org preset',
+                  body: `Adds ${process.env.UPSTREAM} to extends, and the schema where it was missing.\n\n${process.env.FIX_TRAILER}`,
+                },
+                fileChanges: { additions: JSON.parse(process.env.ADDITIONS) },
+              } });
+            core.notice(`Committed the fix as ${commit.oid}.`);
