@@ -352,8 +352,16 @@ jobs:
             - Security problems: injection, unsafe handling of untrusted input, leaked
               secrets or credentials, broken authentication or authorization, and unsafe
               GitHub Actions patterns (untrusted input in run steps, excessive permissions,
-              unpinned actions, dangerous triggers)
+              dangerous triggers, a reusable workflow from outside actions-fyi called by tag
+              or branch)
             - Changes that make the code noticeably harder to maintain
+
+            Actions are referenced by tag on purpose. .github/workflows/actions.lock pins
+            each one, composite actions with the actions they call, and a workflow using an
+            action the lockfile doesn't list fails at startup; the org ruleset checks and
+            regenerates the lockfile. So a tag in uses:, or replacing a commit SHA with one,
+            is not a finding. Reusable workflows of actions-fyi are called by tag too, which
+            their trust policies require.
 
             Report only problems that matter. Skip style nitpicks and praise.
             Put each finding as an inline comment on the line it concerns, then post one
