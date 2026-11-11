@@ -131,7 +131,8 @@ jobs:
     name: Fix Renovate Upstream
     needs: upstream
     if: >-
-      !cancelled() && needs.upstream.outputs.missing != '[]' && github.event_name == 'pull_request'
+      !cancelled() && needs.upstream.outputs.missing != '' && needs.upstream.outputs.missing != '[]'
+      && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
@@ -178,7 +179,8 @@ jobs:
             const additions = [];
             for (const { file, missing: keys } of missing) {
               const { data } = await github.rest.repos.getContent({ ...context.repo, path: file, ref });
-              const original = Buffer.from(data.content, 'base64').toString('utf8');
+              // jq reads past a byte order mark, JSON.parse doesn't; the fix drops it.
+              const original = Buffer.from(data.content, 'base64').toString('utf8').replace(/^\uFEFF/, '');
               const config = JSON.parse(original);
               const wanted = { ...config };
               if (keys.includes('$schema')) wanted.$schema = url;
