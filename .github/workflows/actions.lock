@@ -48,7 +48,9 @@ workflows:
         - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/_renovate.yml':
         - 'actions/checkout@v7.0.1'
+        - 'actions/github-script@v9.0.0'
         - 'step-security/harden-runner@v2.22.4'
+        - 'step-security/octo-sts-action@v1.1.1'
         - 'suzuki-shunsuke/github-action-renovate-config-validator@v2.4.1'
     '.github/workflows/_screen.yml':
         - 'actions/checkout@v7.0.1'
