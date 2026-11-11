@@ -72,6 +72,8 @@ jobs:
       # of _explain.yml, _pr-metadata.yml and _claude.yml need them: they run after a pull
       # request's checks, or on a comment, with the base branch's workflow and token. Their files,
       # synced from actions-fyi/.github, are exempt by name; every other workflow is still audited.
+      # The match is by file name only, so a repository's own workflow under one of these names is
+      # exempt too, with any trigger in it. That gap is accepted.
       - name: Write zizmor Config
         id: config
         run: |
