@@ -37,16 +37,21 @@ name: Check Actions Lockfile
 # Outside pull requests, the fix job stays skipped: a failed check only fails the run.
 #
 # The check job fails when .github/workflows/actions.lock is out of sync with the workflows, or a
-# locked pin no longer verifies upstream. It also fails when there is no lockfile although the
-# workflows use an action it would lock, so the fix job onboards the repository by adding one. A
-# repository whose workflows only call reusable workflows, which the lockfile can't lock, needs
-# none, and is skipped; so is one without workflows.
+# locked pin no longer verifies upstream. It fails on every finding of `gh actions-lock --verify`
+# with severity warning too, although the tool still calls the workflows valid and exits 0 on them.
+# A warning can still break runs: a bare-SHA `uses:` (sha-as-ref) whose lockfile entry is keyed by
+# its tag fails at startup with "lockfile missing pin", because the runner matches the `uses:` text.
+# It also fails when there is no lockfile although the workflows use an action it would lock, so
+# the fix job onboards the repository by adding one. A repository whose workflows only call
+# reusable workflows, which the lockfile can't lock, needs none, and is skipped; so is one without
+# workflows.
 #
 # When it fails on a pull request from a branch of the same repository, the fix job regenerates the
 # lockfile and commits the result to the branch. That includes Renovate branches: Renovate updates
 # the workflows but not the lockfile. The run itself stays failed, because the commit it checked is
 # inconsistent; the fix commit gets its own run. Moved tags and unreachable pins are never fixed
-# automatically, because they change which code runs.
+# automatically, because they change which code runs. Neither is a warning that gh actions-lock
+# can't fix: the fix job then fails with "changed nothing", and a person has to act on it.
 #
 # The commit can't use the workflow's own token, because GitHub starts no workflows for its pushes,
 # so the new head would wait for its required checks forever, and because that token can't change
@@ -165,11 +170,51 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-actions-lock --pin "$GH_ACTIONS_LOCK_VERSION"
+      # --verify exits 0 as long as no finding is an error, and has no flag that also fails on
+      # warnings. So it runs twice: once for the readable report and its exit code, and once with
+      # --json for the findings. Both runs are read-only. Every finding of severity warning or error
+      # becomes an error annotation, and the step fails if there is one. A JSON report that can't be
+      # read fails the step too, rather than letting warnings pass unchecked.
       - name: Verify Lockfile
         if: steps.lockfile.outputs.state == 'found'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh actions-lock --verify
+        run: |
+          status=0
+          gh actions-lock --verify || status=$?
+          report="$RUNNER_TEMP/actions-lock-verify.json"
+          gh actions-lock --verify --json=valid,findings > "$report" || true
+          if ! jq -e '(.valid | type == "boolean") and (.findings | type == "array")' "$report" > /dev/null 2>&1; then
+            echo "::error::Couldn't read the findings of gh actions-lock --verify --json, so its warnings weren't checked. See the output above."
+            exit 1
+          fi
+          # The finding texts come from the workflow files, so they are escaped as workflow command
+          # values: a newline in them must not start a command of its own.
+          annotations='
+            def data: gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def property: data | gsub(":"; "%3A") | gsub(","; "%2C");
+            .findings[]
+            | select(.severity == "warning" or .severity == "error")
+            | "::error "
+              + (if (.workflow // "") != "" then "file=\(.workflow | property)," else "" end)
+              + "title=\("Actions lockfile: \(.category) (\(.severity))" | property)::"
+              + ([
+                  "workflow: \(if (.workflow // "") != "" then .workflow else "(repository)" end)",
+                  "category: \(.category)",
+                  "dependency: \(.dependency // "(none)")\(if .required_by then ", required by \(.required_by)" else "" end)",
+                  "detail: \(.detail)",
+                  "remediation: \(.remediation // "none given")"
+                ] | join("\n") | data)'
+          jq -r "$annotations" "$report"
+          blocking=$(jq '[.findings[] | select(.severity == "warning" or .severity == "error")] | length' "$report")
+          if (( blocking > 0 )); then
+            echo "::error::gh actions-lock --verify reported $blocking finding(s) of severity warning or error. Warnings block too; see the annotations. On a pull request from a branch of this repository, the fix job runs gh actions-lock, which fixes what it can."
+            exit 1
+          fi
+          if (( status != 0 )) || [[ "$(jq -r .valid "$report")" != true ]]; then
+            echo "::error::gh actions-lock --verify failed. See the output above."
+            exit 1
+          fi
       # Generates the lockfile the repository would need, only to see whether it locks anything:
       # without a dependencies key, every workflow only calls reusable workflows. Nothing is kept.
       - name: Check Missing Lockfile
@@ -232,7 +277,7 @@ jobs:
           git add --all
           mapfile -d '' changed < <(git diff --cached --no-renames --name-only -z)
           if (( ${#changed[@]} == 0 )); then
-            echo "::error::gh actions-lock changed nothing, although the check failed. See the check job for the findings."
+            echo "::error::gh actions-lock changed nothing, although the check failed, so it can't fix these findings and a person has to. The check job's annotations list each finding with its remediation."
             exit 1
           fi
           git diff --cached
