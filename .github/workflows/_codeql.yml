@@ -14,7 +14,23 @@ name: CodeQL
 #
 # In private and internal repositories, code scanning needs GitHub Code Security, so the analysis
 # is skipped there: the languages job says so and returns no matrix, and the analyze and upload
-# jobs skip. The run still succeeds, through the languages job, so it satisfies a required check.
+# jobs skip. The results job still passes CodeQL Results, so the required check is satisfied.
+#
+# The check to require is "CodeQL Results", from the Octo STS app. The results job posts it on
+# pull requests and merge groups once every language's upload is done, and each upload waits for
+# code scanning to process it. In a merge queue that matters: the queue deletes its branch once
+# the required checks pass, and an upload that comes after that fails, because code scanning no
+# longer finds the ref. The upload checks can't be required instead: there's one per language,
+# named after the caller's job, so each repository would need its own list. And an org ruleset
+# can't name GitHub Actions as a check's source, which is why the check comes from Octo STS: a
+# ruleset that names Octo STS as the source accepts no status anyone else sets under that name.
+#
+# The token comes from an org-level trust policy in .github/chainguard/ of actions-fyi/.github,
+# which grants checks: write. Callers run a released version of this file, at refs/tags/v..., which
+# codeql-results.sts.yaml (identity codeql-results) matches. This repository's own caller runs the
+# pull request's or merge group's copy, which only codeql-results.shared.sts.yaml (identity
+# codeql-results.shared) matches. A fork's pull request gets no OIDC token, so it gets no check,
+# and the required check blocks it.
 #
 # Default setup and this workflow exclude each other: while default setup is enabled for a
 # repository, code scanning rejects the results uploaded here. Once it is off, only what this
@@ -42,6 +58,7 @@ name: CodeQL
 #   contents: read         # languages: read the repository's languages; analyze: check it out
 #   security-events: write # upload: upload the results to code scanning
 #   actions: read          # upload: let CodeQL read the workflow run
+#   id-token: write        # results: exchange the job's OIDC token with Octo STS
 on:
   workflow_call:
     inputs:
@@ -188,3 +205,98 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4.39.3
         with:
           sarif_file: ${{ runner.temp }}/codeql-results
+
+  # Posts CodeQL Results, the check to require; see the top. It runs even when a job before it
+  # failed or was cancelled, so the check fails rather than never arriving. Only pull requests and
+  # merge groups have required checks, so pushes and scheduled runs post none.
+  results:
+    name: Results
+    needs: [languages, analyze, upload]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    env:
+      POST: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Check Results
+        id: check
+        env:
+          LANGUAGES: ${{ needs.languages.result }}
+          MATRIX: ${{ needs.languages.outputs.matrix }}
+          ANALYZE: ${{ needs.analyze.result }}
+          UPLOAD: ${{ needs.upload.result }}
+        run: |
+          errors=()
+          if [[ "$LANGUAGES" != success ]]; then
+            errors+=("The languages job ended with ${LANGUAGES:-no result}.")
+          else
+            # No matrix: CodeQL is skipped on purpose, and so are the analyze and upload jobs.
+            expected=success
+            [[ -z "$MATRIX" ]] && expected=skipped
+            [[ "$ANALYZE" == "$expected" ]] || errors+=("Analyze ended with ${ANALYZE:-no result}, expected $expected.")
+            [[ "$UPLOAD" == "$expected" ]] || errors+=("Upload ended with ${UPLOAD:-no result}, expected $expected.")
+          fi
+          if (( ${#errors[@]} > 0 )); then
+            for error in "${errors[@]}"; do echo "::error::$error"; done
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+            { echo "summary<<EOF"; printf -- '- %s\n' "${errors[@]}"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          elif [[ -z "$MATRIX" ]]; then
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+            echo "summary=CodeQL is skipped in this repository." >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+            echo "summary=Every language was analyzed, and its results uploaded and processed." >> "$GITHUB_OUTPUT"
+          fi
+      # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
+      # pull request can't add or weaken them. The token is revoked when the job ends.
+      #
+      # codeql-results.sts.yaml accepts only released versions of this file, at refs/tags/v...; this
+      # repository's own caller runs the pull request's or merge group's copy and requests
+      # codeql-results.shared. github.workflow_ref names the caller.
+      - name: Get Check Token
+        if: env.POST == 'true'
+        id: sts
+        continue-on-error: true
+        uses: step-security/octo-sts-action@v1.1.1
+        with:
+          scope: ${{ github.repository_owner }}
+          identity: ${{ startsWith(github.workflow_ref, 'actions-fyi/shared-workflows/') && 'codeql-results.shared' || 'codeql-results' }}
+      - name: Report Missing Check Token
+        if: env.POST == 'true' && steps.sts.outcome != 'success'
+        run: |
+          echo "::error::Octo STS granted no token, so CodeQL Results isn't posted and the required check stays pending. A fork's pull request gets no OIDC token; otherwise check the codeql-results trust policies in actions-fyi/.github and re-run this job."
+          exit 1
+      # On the pull request's head, not the merge commit the run checked out: required checks are
+      # read from the head. A merge group's head is the commit the queue tests.
+      - name: Post CodeQL Results
+        if: env.POST == 'true' && steps.sts.outcome == 'success'
+        uses: actions/github-script@v9.0.0
+        env:
+          CONCLUSION: ${{ steps.check.outputs.conclusion }}
+          SUMMARY: ${{ steps.check.outputs.summary }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        with:
+          github-token: ${{ steps.sts.outputs.token }}
+          script: |
+            const { CONCLUSION: conclusion, SUMMARY: summary, HEAD_SHA: head_sha } = process.env;
+            await github.rest.checks.create({
+              ...context.repo,
+              name: 'CodeQL Results',
+              head_sha,
+              status: 'completed',
+              conclusion,
+              details_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              output: {
+                title: conclusion === 'success' ? 'CodeQL results uploaded' : 'CodeQL results incomplete',
+                summary,
+              },
+            });
+            core.info(`Posted CodeQL Results (${conclusion}) on ${head_sha}.`);
+      - name: Fail on Incomplete Results
+        if: steps.check.outputs.conclusion != 'success'
+        run: exit 1
