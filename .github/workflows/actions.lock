@@ -29,6 +29,7 @@ workflows:
         - 'actions/upload-artifact@v7.0.2'
         - 'github/codeql-action@v4.39.3'
         - 'step-security/harden-runner@v2.22.4'
+        - 'step-security/octo-sts-action@v1.1.1'
     '.github/workflows/_explain.yml':
         - 'actions/github-script@v9.0.0'
         - 'step-security/claude-code-action@v1.0.268'
