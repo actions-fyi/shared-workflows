@@ -46,17 +46,18 @@ name: Check Actions Lockfile
 # becomes a warning annotation, and errors become error annotations. Some warnings still break
 # runs: a bare-SHA `uses:` (sha-as-ref) whose lockfile entry is keyed by its tag fails at startup
 # with "lockfile missing pin", because the runner matches the `uses:` text. That's why the fix job
-# runs after every check on a pull request, not only after a failed one.
+# also runs after a passed check, in a repository with a lockfile.
 #
 # On a pull request from a branch of the same repository, the fix job runs gh actions-lock and
-# commits whatever it changes to the branch, after a failed check and after a passed one with
-# warnings it can fix, such as a bare SHA it rewrites to its tag. That includes Renovate branches:
-# Renovate updates the workflows but not the lockfile. A failed run stays failed, because the commit
-# it checked is inconsistent; the fix commit gets its own run. Moved tags and unreachable pins are
-# never fixed automatically, because they change which code runs. When gh actions-lock changes
-# nothing, the fix job fails after a failed check, because a person has to act on it, and passes
-# after a passed one: warnings it can't fix, such as a container image an action pulls by tag, stay
-# annotations.
+# commits whatever it changes to the branch. That includes Renovate branches: Renovate updates the
+# workflows but not the lockfile. It runs after a failed check, and after a passed one in a
+# repository with a lockfile, where it fixes warnings such as a bare SHA, which it rewrites to its
+# tag. A repository without a lockfile that passed needs none, so it gets no fix. A failed run
+# stays failed, because the commit it checked is inconsistent; the fix commit gets its own run.
+# Moved tags and unreachable pins are never fixed automatically, because they change which code
+# runs. When gh actions-lock changes nothing, the fix job fails after a failed check, because a
+# person has to act on it, and passes after a passed one: warnings it can't fix, such as a
+# container image an action pulls by tag, stay annotations.
 #
 # The commit can't use the workflow's own token, because GitHub starts no workflows for its pushes,
 # so the new head would wait for its required checks forever, and because that token can't change
@@ -148,6 +149,9 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read # Read the workflows
+    outputs:
+      # found, missing, or empty without .github/workflows; read by the fix job after a passed check
+      lockfile: ${{ steps.lockfile.outputs.state }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
@@ -232,15 +236,20 @@ jobs:
     name: Fix Actions Lockfile
     needs: check
     # After every check that ran on a pull request from a branch of this repository, failed or
-    # passed, because a passed check can still report warnings gh actions-lock fixes. Fork pull
-    # requests get no OIDC token, the merge queue has no branch to fix, and Dependabot updates the
-    # lockfile itself.
+    # passed, because a passed check can still report warnings gh actions-lock fixes. After a
+    # passed check, only if the repository has a lockfile: one without it passed because it needs
+    # none, and gh actions-lock would only add a lockfile without dependencies. Fork pull requests
+    # get no OIDC token, the merge queue has no branch to fix, and Dependabot updates the lockfile
+    # itself.
     #
     # No concurrency group: the commit only lands if the branch didn't move, and a group shared
     # with the check job would let the run that the fix commit starts cancel this job's cleanup.
     if: >-
       !cancelled()
-      && (needs.check.result == 'failure' || needs.check.result == 'success')
+      && (
+        needs.check.result == 'failure'
+        || (needs.check.result == 'success' && needs.check.outputs.lockfile == 'found')
+      )
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
