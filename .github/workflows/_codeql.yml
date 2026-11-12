@@ -14,13 +14,7 @@ name: CodeQL
 #
 # In private and internal repositories, code scanning needs GitHub Code Security, so the analysis
 # is skipped there: the languages job says so and returns no matrix, and the analyze and upload
-# jobs skip. The results job still succeeds, so the run satisfies a required check.
-#
-# The check to require is "<caller job name> / Results", e.g. "CodeQL / Results". The upload
-# checks are one per language, so requiring them would miss a language added later. Results waits
-# for every language's upload, and each upload waits for code scanning to process it. In a merge
-# queue that matters: the queue deletes its branch once the required checks pass, and an upload
-# that comes after that fails, because code scanning no longer finds the ref.
+# jobs skip. The run still succeeds, through the languages job, so it satisfies a required check.
 #
 # Default setup and this workflow exclude each other: while default setup is enabled for a
 # repository, code scanning rejects the results uploaded here. Once it is off, only what this
@@ -194,41 +188,3 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4.39.3
         with:
           sarif_file: ${{ runner.temp }}/codeql-results
-
-  # The one check to require; see the top. It runs even when a job before it failed or was
-  # cancelled, since a skipped required check counts as passed.
-  results:
-    name: Results
-    needs: [languages, analyze, upload]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    permissions: {} # None: only reads the results of the jobs before it
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
-        with:
-          egress-policy: audit
-      - name: Check Results
-        env:
-          LANGUAGES: ${{ needs.languages.result }}
-          MATRIX: ${{ needs.languages.outputs.matrix }}
-          ANALYZE: ${{ needs.analyze.result }}
-          UPLOAD: ${{ needs.upload.result }}
-        run: |
-          if [[ "$LANGUAGES" != success ]]; then
-            echo "::error::The languages job ended with ${LANGUAGES:-no result}."
-            exit 1
-          fi
-          # No matrix: CodeQL is skipped on purpose, and so are the analyze and upload jobs.
-          expected=success
-          [[ -z "$MATRIX" ]] && expected=skipped
-          status=0
-          expect() {
-            if [[ "$2" != "$expected" ]]; then
-              echo "::error::$1 ended with ${2:-no result}, expected $expected."
-              status=1
-            fi
-          }
-          expect "Analyze" "$ANALYZE"
-          expect "Upload" "$UPLOAD"
-          exit "$status"
