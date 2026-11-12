@@ -42,11 +42,22 @@ name: Check Actions Lockfile
 # repository whose workflows only call reusable workflows, which the lockfile can't lock, needs
 # none, and is skipped; so is one without workflows.
 #
-# When it fails on a pull request from a branch of the same repository, the fix job regenerates the
-# lockfile and commits the result to the branch. That includes Renovate branches: Renovate updates
-# the workflows but not the lockfile. The run itself stays failed, because the commit it checked is
-# inconsistent; the fix commit gets its own run. Moved tags and unreachable pins are never fixed
-# automatically, because they change which code runs.
+# Findings of `gh actions-lock --verify` with severity warning don't fail the check, but each one
+# becomes a warning annotation, and errors become error annotations. Some warnings still break
+# runs: a bare-SHA `uses:` (sha-as-ref) whose lockfile entry is keyed by its tag fails at startup
+# with "lockfile missing pin", because the runner matches the `uses:` text. That's why the fix job
+# also runs after a passed check, in a repository with a lockfile.
+#
+# On a pull request from a branch of the same repository, the fix job runs gh actions-lock and
+# commits whatever it changes to the branch. That includes Renovate branches: Renovate updates the
+# workflows but not the lockfile. It runs after a failed check, and after a passed one in a
+# repository with a lockfile, where it fixes warnings such as a bare SHA, which it rewrites to its
+# tag. A repository without a lockfile that passed needs none, so it gets no fix. A failed run
+# stays failed, because the commit it checked is inconsistent; the fix commit gets its own run.
+# Moved tags and unreachable pins are never fixed automatically, because they change which code
+# runs. When gh actions-lock changes nothing, the fix job fails after a failed check, because a
+# person has to act on it, and passes after a passed one: warnings it can't fix, such as a
+# container image an action pulls by tag, stay annotations.
 #
 # The commit can't use the workflow's own token, because GitHub starts no workflows for its pushes,
 # so the new head would wait for its required checks forever, and because that token can't change
@@ -138,6 +149,9 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read # Read the workflows
+    outputs:
+      # found, missing, or empty without .github/workflows; read by the fix job after a passed check
+      lockfile: ${{ steps.lockfile.outputs.state }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
@@ -165,11 +179,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-actions-lock --pin "$GH_ACTIONS_LOCK_VERSION"
+      # --verify exits 0 as long as no finding is an error, and only prints warnings. So it runs
+      # twice: once for the readable report and its exit code, which decides the step, and once with
+      # --json for the findings. Both runs are read-only. Every finding of severity warning becomes a
+      # warning annotation and every error an error annotation, so they show on the pull request.
       - name: Verify Lockfile
         if: steps.lockfile.outputs.state == 'found'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh actions-lock --verify
+        run: |
+          status=0
+          gh actions-lock --verify || status=$?
+          report="$RUNNER_TEMP/actions-lock-verify.json"
+          gh actions-lock --verify --json=valid,findings > "$report" || true
+          if ! jq -e '(.valid | type == "boolean") and (.findings | type == "array")' "$report" > /dev/null 2>&1; then
+            echo "::warning::Couldn't read the findings of gh actions-lock --verify --json, so they have no annotations. See the output above."
+            exit "$status"
+          fi
+          # The finding texts come from the workflow files, so they are escaped as workflow command
+          # values: a newline in them must not start a command of its own.
+          annotations='
+            def data: gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def property: data | gsub(":"; "%3A") | gsub(","; "%2C");
+            .findings[]
+            | select(.severity == "warning" or .severity == "error")
+            | "::\(.severity) "
+              + (if (.workflow // "") != "" then "file=\(.workflow | property)," else "" end)
+              + "title=\("Actions lockfile: \(.category) (\(.severity))" | property)::"
+              + ([
+                  "workflow: \(if (.workflow // "") != "" then .workflow else "(repository)" end)",
+                  "category: \(.category)",
+                  "dependency: \(.dependency // "(none)")\(if .required_by then ", required by \(.required_by)" else "" end)",
+                  "detail: \(.detail)",
+                  "remediation: \(.remediation // "none given")"
+                ] | join("\n") | data)'
+          jq -r "$annotations" "$report"
+          if (( status != 0 )) || [[ "$(jq -r .valid "$report")" != true ]]; then
+            echo "::error::gh actions-lock --verify failed. See the output above."
+            exit 1
+          fi
       # Generates the lockfile the repository would need, only to see whether it locks anything:
       # without a dependencies key, every workflow only calls reusable workflows. Nothing is kept.
       - name: Check Missing Lockfile
@@ -187,14 +235,21 @@ jobs:
   fix:
     name: Fix Actions Lockfile
     needs: check
-    # Only after a failed check on a branch of this repository. Fork pull requests get no OIDC
-    # token, the merge queue has no branch to fix, and Dependabot updates the lockfile itself.
+    # After every check that ran on a pull request from a branch of this repository, failed or
+    # passed, because a passed check can still report warnings gh actions-lock fixes. After a
+    # passed check, only if the repository has a lockfile: one without it passed because it needs
+    # none, and gh actions-lock would only add a lockfile without dependencies. Fork pull requests
+    # get no OIDC token, the merge queue has no branch to fix, and Dependabot updates the lockfile
+    # itself.
     #
     # No concurrency group: the commit only lands if the branch didn't move, and a group shared
     # with the check job would let the run that the fix commit starts cancel this job's cleanup.
     if: >-
-      failure()
-      && needs.check.result == 'failure'
+      !cancelled()
+      && (
+        needs.check.result == 'failure'
+        || (needs.check.result == 'success' && needs.check.outputs.lockfile == 'found')
+      )
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
@@ -205,6 +260,8 @@ jobs:
     env:
       # Marks the fix commit, so a fix that doesn't settle the lockfile isn't committed again.
       FIX_TRAILER: "Lockfile-Fixed-By: ${{ github.workflow }}"
+      # success or failure: whether a fix run that changes nothing, or can't run, fails this job.
+      CHECK_RESULT: ${{ needs.check.result }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
@@ -221,18 +278,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-actions-lock --pin "$GH_ACTIONS_LOCK_VERSION"
       # A fix run performs the same checks as --verify, and writes nothing when one of them fails,
-      # so moved tags and unreachable pins still need a person.
+      # so moved tags and unreachable pins still need a person. After a passed check, such a
+      # failure only leaves the warnings as they are, so it doesn't fail the job.
       - name: Regenerate Lockfile
+        id: regenerate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh actions-lock
+        run: |
+          if gh actions-lock; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$CHECK_RESULT" == success ]]; then
+            echo "::warning::gh actions-lock couldn't fix the warnings of the check job; see the output above. Nothing was committed."
+          else
+            exit 1
+          fi
       - name: Collect Fix
         id: fix
+        if: steps.regenerate.outputs.done == 'true'
         run: |
           git add --all
           mapfile -d '' changed < <(git diff --cached --no-renames --name-only -z)
           if (( ${#changed[@]} == 0 )); then
-            echo "::error::gh actions-lock changed nothing, although the check failed. See the check job for the findings."
+            if [[ "$CHECK_RESULT" == success ]]; then
+              echo "::notice::gh actions-lock changed nothing, so there is nothing to commit. Any warnings the check job annotated are ones it doesn't fix."
+              exit 0
+            fi
+            echo "::error::gh actions-lock changed nothing, although the check failed, so it can't fix these findings and a person has to. The check job's annotations list each finding with its remediation."
             exit 1
           fi
           git diff --cached
@@ -297,7 +368,7 @@ jobs:
             --arg repo "$GITHUB_REPOSITORY" \
             --arg branch "$HEAD_REF" \
             --arg head "$HEAD_SHA" \
-            --arg body "Regenerated with gh actions-lock, so the lockfile matches the workflows.
+            --arg body "Regenerated with gh actions-lock, so the lockfile and the workflows agree.
 
           $FIX_TRAILER" \
             --slurpfile additions "$additions" \
