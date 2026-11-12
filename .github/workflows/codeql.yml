@@ -3,6 +3,11 @@ name: CodeQL
 # there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
 # ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups
 # too, and pushes to main and a weekly run give code scanning the default branch's results.
+#
+# The repository's own ruleset requires "CodeQL / Upload (actions)", its only CodeQL language.
+# Otherwise the merge queue merges and deletes its branch before the upload, and code scanning
+# rejects the results for a ref that no longer exists. The org ruleset needs no such check: a
+# ruleset workflow is required as a whole run, uploads included.
 on:
   pull_request:
   merge_group:
