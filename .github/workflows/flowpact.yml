@@ -1,11 +1,12 @@
 name: Check Workflow Data Flow
-# This repository's caller of its own shared workflow _flowpact.yml, which holds the lint; see
+# This repository's caller of its own shared workflow _flowpact.yml, which holds the check; see
 # there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
 # ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups
 # too, and pushes to main, where a failed check opens an issue.
 #
 # This repository publishes its _-prefixed shared workflows under release tags, and its custom
-# property action-publishing is true, so the check also grades each pull request's impact on them
+# property action-publishing is true. So the check also compares them with their contracts, which
+# the update job regenerates when they drift, and grades each pull request's impact on them
 # against its title: one that breaks callers, e.g. by needing a new permission, needs a `type!:`
 # title. .github/flowpact/flowpact.config.yml lists them under impact.publish. Edited reruns the
 # check after the title is fixed.
@@ -26,6 +27,6 @@ jobs:
       contents: read # Check out the repository and fetch the remote interfaces
       security-events: write # Upload the SARIF report to code scanning
       actions: read # Let upload-sarif read the workflow run
-      id-token: write # Exchange an OIDC token with Octo STS to commit the remotes lockfile
+      id-token: write # Exchange an OIDC token with Octo STS to commit contracts and the remotes lockfile
       issues: write # Report a failed check on main
     uses: $/.github/workflows/_flowpact.yml
