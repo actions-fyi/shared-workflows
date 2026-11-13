@@ -1,0 +1,60 @@
+name: Check Workflow Data Flow
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the flowpact lint. Workflows in other repositories,
+# ruleset workflows included, call it by full path and tag: in a ruleset workflow, GitHub resolves
+# `$/` against the target repository, where this file doesn't exist. This repository's own
+# flowpact.yml calls it with `$/`. It runs as part of the caller's run, in the target repository's
+# context: the caller's event, token and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# flowpact (https://github.com/ciatlas/flowpact) checks what flows between workflows, reusable
+# workflows and actions: an input, secret, matrix value or output that a caller passes and the
+# callee never declares, or that a job reads and nothing sets, arrives empty while the run stays
+# green. actionlint checks each file on its own; flowpact checks the interfaces between them. It
+# reads the repository's .github/flowpact/flowpact.config.yml for overrides, where one exists.
+#
+# It lints, and doesn't check contracts or grade impact: contracts are interface snapshots a
+# repository commits under .github/flowpact/, which most repositories don't have, and a ruleset
+# workflow can't pass a repository its own inputs. Pull request titles are checked by Check
+# Metadata already.
+#
+# Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
+# it must also run on merge_group, where it lints the merged result. It has no paths filter: a
+# required workflow that never runs blocks merging, and a repository without workflows lints in
+# seconds.
+#
+# The calling job must grant what the flowpact job declares, or the call fails before anything
+# runs:
+#   contents: read  # check out the repository
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  flowpact:
+    name: Data Flow
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Check out the repository
+    concurrency:
+      group: flowpact-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Pinned to an exact release, not the minor tag: before 1.0, a release can change what's
+      # reported. Plugins are off: they run JavaScript from the checked-out repository, which a
+      # pull request can change.
+      - name: Lint Workflow Data Flow
+        uses: ciatlas/flowpact@v0.29.1
+        with:
+          mode: lint
+          plugins: "false"
