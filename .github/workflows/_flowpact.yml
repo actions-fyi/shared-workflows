@@ -339,31 +339,46 @@ jobs:
           name: flowpact-update
           path: ${{ runner.temp }}/flowpact-update
       # Checked here again, because this job holds the write token: only contracts and the remotes
-      # lockfile, and only files the update job staged.
+      # lockfile, only files the update job staged, and before the token is requested.
       - name: Check Update
-        run: |
-          staging="$RUNNER_TEMP/flowpact-update"
-          status=0
-          while IFS= read -r path; do
-            case "$path" in
-              ../* | */../* | /*)
-                echo "::error::The update lists $path, which isn't a path in the repository."
-                status=1
-                ;;
-              .github/flowpact/contracts/* | .github/flowpact/remotes.lock.yaml | .github/flowpact/remotes.lock.yml) ;;
-              *)
-                echo "::error::The update lists $path, which is neither a contract nor the remotes lockfile."
-                status=1
-                ;;
-            esac
-          done < <(jq -r '.additions[], .deletions[]' "$staging/changes.json")
-          while IFS= read -r path; do
-            if [[ ! -f "$staging/files/$path" ]]; then
-              echo "::error::The update lists $path as added, but didn't stage it."
-              status=1
-            fi
-          done < <(jq -r '.additions[]' "$staging/changes.json")
-          exit "$status"
+        uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const staging = path.join(process.env.RUNNER_TEMP, 'flowpact-update');
+            const { additions, deletions } = JSON.parse(
+              fs.readFileSync(path.join(staging, 'changes.json'), 'utf8'),
+            );
+            if (!Array.isArray(additions) || !Array.isArray(deletions)) {
+              core.setFailed("The update's changes.json lists no additions and deletions.");
+              return;
+            }
+            const allowed = (file) =>
+              file.startsWith('.github/flowpact/contracts/')
+              || file === '.github/flowpact/remotes.lock.yaml'
+              || file === '.github/flowpact/remotes.lock.yml';
+            let ok = true;
+            for (const file of [...additions, ...deletions]) {
+              if (typeof file !== 'string' || file.startsWith('/') || path.posix.normalize(file) !== file
+                || file.split('/').includes('..')) {
+                core.error(`The update lists ${file}, which isn't a path in the repository.`);
+                ok = false;
+              } else if (!allowed(file)) {
+                core.error(`The update lists ${file}, which is neither a contract nor the remotes lockfile.`);
+                ok = false;
+              }
+            }
+            for (const file of additions) {
+              const staged = path.join(staging, 'files', String(file));
+              if (!fs.existsSync(staged) || !fs.lstatSync(staged).isFile()) {
+                core.error(`The update lists ${file} as added, but didn't stage it.`);
+                ok = false;
+              }
+            }
+            if (!ok) {
+              core.setFailed('Nothing was committed.');
+            }
       # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
       # pull request can't add or weaken them. The token is revoked when the job ends.
       #
@@ -386,45 +401,46 @@ jobs:
       # only moves if nothing was pushed to it since this run started. Renovate must list the
       # commit's author, octo-sts[bot], in gitIgnoredAuthors, or it stops updating the branch.
       - name: Commit Update
+        uses: actions/github-script@v9.0.0
         env:
-          GH_TOKEN: ${{ steps.sts.outputs.token }}
           HEAD_REF: ${{ github.head_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          staging="$RUNNER_TEMP/flowpact-update"
-          additions="$RUNNER_TEMP/additions.json"
-          deletions="$RUNNER_TEMP/deletions.json"
-          request="$RUNNER_TEMP/request.json"
-          jq -r '.additions[]' "$staging/changes.json" \
-            | while IFS= read -r path; do
-                jq -n --arg path "$path" --rawfile contents <(base64 -w0 -- "$staging/files/$path") \
-                  '{path: $path, contents: $contents}'
-              done \
-            | jq -s . > "$additions"
-          jq '[.deletions[] | {path: .}]' "$staging/changes.json" > "$deletions"
-          jq -n \
-            --arg repo "$GITHUB_REPOSITORY" \
-            --arg branch "$HEAD_REF" \
-            --arg head "$HEAD_SHA" \
-            --arg body "Updated with flowpact remotes update and generate, so the remotes lockfile and the contracts match the workflows and actions.
-
-          $FIX_TRAILER" \
-            --slurpfile additions "$additions" \
-            --slurpfile deletions "$deletions" \
-            '{
-              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
-              variables: {input: {
-                branch: {repositoryNameWithOwner: $repo, branchName: $branch},
-                expectedHeadOid: $head,
-                message: {headline: "ci: update the flowpact contracts and remotes lockfile", body: $body},
-                fileChanges: {additions: $additions[0], deletions: $deletions[0]}
-              }}
-            }' > "$request"
-          if ! oid=$(gh api graphql --input "$request" --jq '.data.createCommitOnBranch.commit.oid'); then
-            echo "::error::Couldn't commit the update. If the branch moved since this run started, the new push gets its own run."
-            exit 1
-          fi
-          echo "::notice::Committed the update as $oid. Its own run checks the result."
+        with:
+          github-token: ${{ steps.sts.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const staging = path.join(process.env.RUNNER_TEMP, 'flowpact-update');
+            const { additions, deletions } = JSON.parse(
+              fs.readFileSync(path.join(staging, 'changes.json'), 'utf8'),
+            );
+            try {
+              const { createCommitOnBranch: { commit } } = await github.graphql(`
+                mutation($input: CreateCommitOnBranchInput!) {
+                  createCommitOnBranch(input: $input) { commit { oid } }
+                }`, { input: {
+                  branch: {
+                    repositoryNameWithOwner: `${context.repo.owner}/${context.repo.repo}`,
+                    branchName: process.env.HEAD_REF,
+                  },
+                  expectedHeadOid: process.env.HEAD_SHA,
+                  message: {
+                    headline: 'ci: update the flowpact contracts and remotes lockfile',
+                    body: 'Updated with flowpact remotes update and generate, so the remotes lockfile and '
+                      + `the contracts match the workflows and actions.\n\n${process.env.FIX_TRAILER}`,
+                  },
+                  fileChanges: {
+                    additions: additions.map((file) => ({
+                      path: file,
+                      contents: fs.readFileSync(path.join(staging, 'files', file)).toString('base64'),
+                    })),
+                    deletions: deletions.map((file) => ({ path: file })),
+                  },
+                } });
+              core.notice(`Committed the update as ${commit.oid}. Its own run checks the result.`);
+            } catch (error) {
+              core.setFailed(`Couldn't commit the update: ${error.message}. If the branch moved since this run started, the new push gets its own run.`);
+            }
 
   # Checks nothing out and runs nothing from the repository: it reports the check's failure.
   issue:
