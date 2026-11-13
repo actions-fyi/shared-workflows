@@ -19,6 +19,7 @@ name: Check Workflow Data Flow
 # writes. The check reads that lockfile and fetches the interfaces of references it lacks for the
 # run, so every call is checked. A reference the lockfile lacks, or an entry nothing uses, is a
 # warning (FP612); on a pull request, a version change that breaks a call fails the check.
+# flowpact reports no FP612 without a lockfile, so a missing one counts as stale too.
 #
 # Contracts: the check runs in check mode, which lints and also compares the workflows and actions
 # with the interface snapshots committed under .github/flowpact/contracts/, which flowpact generate
@@ -134,24 +135,32 @@ jobs:
           remotes: fetch
           impact: ${{ env.PUBLISHING == 'true' && 'auto' || 'off' }}
           report-sarif: flowpact.sarif
-          report-json: flowpact.json
-      # Contract findings are FP801 to FP805: a missing, outdated or stale contract.
+      # The findings are the SARIF report's results, by rule id. The report also lists every rule
+      # flowpact has, so the ids appear in it whether or not anything was found. Contract findings
+      # are FP801 to FP805: a missing, outdated or stale contract.
       - name: Read Report
         id: report
         if: ${{ !cancelled() }}
         env:
           SARIF: ${{ steps.flowpact.outputs.report-sarif }}
-          REPORT: ${{ steps.flowpact.outputs.report-json }}
           DRIFT: ${{ steps.flowpact.outputs.drift }}
         run: |
+          found() { return 1; }
           if [[ -n "$SARIF" && -f "$SARIF" ]]; then
             echo "sarif=true" >> "$GITHUB_OUTPUT"
+            found() {
+              jq -e --arg rule "$1" \
+                'any(.runs[]?.results[]?; (.ruleId // "") | test($rule))' "$SARIF" > /dev/null
+            }
           fi
-          if [[ -n "$REPORT" && -f "$REPORT" ]] && grep -q 'FP612' "$REPORT"; then
+          if [[ ! -f .github/flowpact/remotes.lock.yaml && ! -f .github/flowpact/remotes.lock.yml ]]; then
+            echo "::notice::There is no remotes lockfile yet."
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          elif found '^FP612$'; then
             echo "::notice::The remotes lockfile lacks a reference the workflows use, or has one nothing uses."
             echo "stale=true" >> "$GITHUB_OUTPUT"
           fi
-          if [[ "$DRIFT" == true ]] || { [[ -n "$REPORT" && -f "$REPORT" ]] && grep -qE 'FP80[1-5]' "$REPORT"; }; then
+          if [[ "$DRIFT" == true ]] || found '^FP80[1-5]$'; then
             echo "::notice::The contracts don't match the workflows and actions."
             echo "drift=true" >> "$GITHUB_OUTPUT"
           fi
@@ -220,8 +229,10 @@ jobs:
     permissions:
       contents: read # Check out the repository and read the remote interfaces
     outputs:
-      # true when the update changed files, which the commit job then commits
+      # true when the update changed files, which the commit job then commits, and the commands
+      # that changed them, for the commit message
       changed: ${{ steps.update.outputs.changed }}
+      commands: ${{ steps.update.outputs.commands }}
     env:
       # Marks the update commit, so an update that doesn't settle the files isn't committed again.
       FIX_TRAILER: "Flowpact-Updated-By: ${{ github.workflow }}"
@@ -268,11 +279,19 @@ jobs:
             echo "::error::The head commit is already a flowpact update, but the check still finds the contracts or the remotes lockfile out of date. Nothing was updated, to avoid a loop. Run flowpact remotes update and flowpact generate, and commit the result."
             exit 1
           fi
+          commands=()
           if [[ "$STALE" == true ]]; then
             node "$FLOWPACT_CLI" remotes update
+            commands+=("flowpact remotes update")
           fi
           if [[ "$DRIFT" == true && "$PUBLISHING" == true ]]; then
             node "$FLOWPACT_CLI" generate
+            commands+=("flowpact generate")
+          fi
+          if (( ${#commands[@]} == 2 )); then
+            echo "commands=${commands[0]} and ${commands[1]}" >> "$GITHUB_OUTPUT"
+          elif (( ${#commands[@]} == 1 )); then
+            echo "commands=${commands[0]}" >> "$GITHUB_OUTPUT"
           fi
           git add --all
           mapfile -d '' changed < <(git diff --cached --no-renames --name-only -z)
@@ -328,6 +347,7 @@ jobs:
       id-token: write # Exchange the job's OIDC token with Octo STS
     env:
       FIX_TRAILER: "Flowpact-Updated-By: ${{ github.workflow }}"
+      COMMANDS: ${{ needs.update.outputs.commands }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
@@ -426,8 +446,9 @@ jobs:
                   expectedHeadOid: process.env.HEAD_SHA,
                   message: {
                     headline: 'ci: update the flowpact contracts and remotes lockfile',
-                    body: 'Updated with flowpact remotes update and generate, so the remotes lockfile and '
-                      + `the contracts match the workflows and actions.\n\n${process.env.FIX_TRAILER}`,
+                    body: `Updated with ${process.env.COMMANDS || 'flowpact'}, so the remotes lockfile `
+                      + 'and the contracts match the workflows and actions.'
+                      + `\n\n${process.env.FIX_TRAILER}`,
                   },
                   fileChanges: {
                     additions: additions.map((file) => ({
