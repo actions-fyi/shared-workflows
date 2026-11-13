@@ -14,65 +14,376 @@ name: Check Workflow Data Flow
 # green. actionlint checks each file on its own; flowpact checks the interfaces between them. It
 # reads the repository's .github/flowpact/flowpact.config.yml for overrides, where one exists.
 #
-# It lints, and doesn't check contracts: contracts are interface snapshots a repository commits
-# under .github/flowpact/, which most repositories don't have.
+# Remote interfaces: the interfaces of the workflows and actions a repository calls from other
+# repositories are recorded in .github/flowpact/remotes.lock.yaml, which flowpact remotes update
+# writes. The check reads that lockfile and fetches the interfaces of references it lacks for the
+# run, so every call is checked. A reference the lockfile lacks, or an entry nothing uses, is a
+# warning (FP612); on a pull request, a version change that breaks a call fails the check.
 #
-# Impact grading is off unless the caller turns it on with the impact input. It compares the
-# workflows and actions a repository publishes for others to use with the pull request's base,
-# and fails when the change needs a bigger version bump than the pull request title declares
-# (`fix:` patch, `feat:` minor, `type!:` major, other types none). That only matters for a
-# repository that publishes them, like this one, so the org ruleset's caller leaves it off. A
-# publishing repository's own caller turns it on, and also runs on the edited activity type, so
-# a corrected title is graded again. flowpact grades reusable workflows without a `_` prefix and a
-# root action.yml unless .github/flowpact/flowpact.config.yml lists others under impact.publish,
-# and it reads those settings from the base branch, so a pull request can't relax its own grade.
-# Merge groups aren't graded: the pull request was.
+# Contracts stay off: the check lints, and doesn't compare with interface snapshots committed under
+# .github/flowpact/contracts/, which most repositories don't have.
 #
-# Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
-# it must also run on merge_group, where it lints the merged result. It has no paths filter: a
-# required workflow that never runs blocks merging, and a repository without workflows lints in
-# seconds.
+# Impact grading is on only in a repository whose custom property action-publishing is true. It
+# compares the workflows and actions the repository publishes for others to use with the pull
+# request's base, and fails when the change needs a bigger version bump than the pull request
+# title declares (`fix:` patch, `feat:` minor, `type!:` major, other types none). A publishing
+# repository's own caller also runs on the edited activity type, so a corrected title is graded
+# again; a ruleset caller can't. flowpact grades reusable workflows without a `_` prefix and a root
+# action.yml unless .github/flowpact/flowpact.config.yml lists others under impact.publish, and it
+# reads those settings from the base branch, so a pull request can't relax its own grade. Merge
+# groups aren't graded: the pull request was.
 #
-# The calling job must grant what the flowpact job declares, or the call fails before anything
-# runs:
-#   contents: read  # check out the repository
+# Jobs, each with only what it needs:
+# - check lints with a read-only token. It runs on every event, and writes a SARIF report.
+# - sarif uploads that report, and only that file, to code scanning, on pull requests from a branch
+#   of this repository and on pushes. A fork's pull request gets a read-only token.
+# - update runs on a pull request from a branch of this repository when the check found the remotes
+#   lockfile stale. It runs flowpact remotes update with a read-only token and saves only the
+#   lockfile as an artifact. The CLI comes from flowpact's release, whose attestation is verified,
+#   because the action doesn't include it and actions.lock can't pin it.
+# - commit commits that lockfile to the pull request's branch. The commit can't use the workflow's
+#   own token, because GitHub starts no workflows for its pushes, so the new head would wait for its
+#   required checks forever. It uses a short-lived token from Octo STS instead, granted by an
+#   org-level trust policy in .github/chainguard/ of actions-fyi/.github with contents: write.
+#   Callers run a released version of this file, at refs/tags/v..., which flowpact-lock.sts.yaml
+#   (identity flowpact-lock) matches; this repository's own caller runs the pull request's copy,
+#   which only flowpact-lock.shared.sts.yaml (identity flowpact-lock.shared) matches. A token can't
+#   be handed from one job to another, so this job requests it itself; it checks nothing out and
+#   runs nothing from the repository.
+# - issue opens an issue, or comments on the open one, when the check fails on a push, with the
+#   workflow's own token.
+#
+# Callers run it on pull_request and merge_group, and may run it on push. A merge queue waits for
+# every required check, so it must also run on merge_group, where it lints the merged result. It
+# has no paths filter: a required workflow that never runs blocks merging, and a repository without
+# workflows lints in seconds. The check to require is "<caller job name> / Data Flow".
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   contents: read         # check: check out the repository and fetch the remote interfaces;
+#                          # update: run flowpact remotes update
+#   security-events: write # sarif: upload the SARIF report to code scanning
+#   actions: read          # sarif: let upload-sarif read the workflow run
+#   id-token: write        # commit: exchange the job's OIDC token with Octo STS
+#   issues: write          # issue: open or comment on the issue
 on:
   workflow_call:
-    inputs:
-      impact:
-        description: >-
-          Whether to grade the change's impact on the published workflows and actions against the
-          pull request title: off, or auto for repositories that publish them; see the top.
-        type: string
-        required: false
-        default: "off"
 
 permissions: {}
 
+env:
+  # The CLI release the update job runs, and the one the action below is pinned to. Keep both on
+  # the same version.
+  FLOWPACT_VERSION: 0.29.1
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  flowpact:
+  check:
     name: Data Flow
     runs-on: ubuntu-latest
-    permissions:
-      contents: read # Check out the repository
+    # Per caller: in a repository with two callers, its own and a ruleset's, neither cancels the other.
     concurrency:
-      group: flowpact-${{ github.ref }}
+      group: flowpact-check-${{ github.workflow_ref }}-${{ github.ref }}
       cancel-in-progress: true
+    permissions:
+      contents: read # Check out the repository, fetch the base and the remote interfaces
+    outputs:
+      # true when the SARIF report was written, and the remotes lockfile needs flowpact remotes update
+      sarif: ${{ steps.report.outputs.sarif }}
+      stale: ${{ steps.report.outputs.stale }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
+      # The pull request's head, not its merge commit, so the check and the update see the same
+      # files. The merge queue checks the merged result.
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       # Pinned to an exact release, not the minor tag: before 1.0, a release can change what's
       # reported. Plugins are off: they run JavaScript from the checked-out repository, which a
-      # pull request can change.
+      # pull request can change. The token is the workflow's own, which reads public repositories.
       - name: Lint Workflow Data Flow
+        id: flowpact
         uses: ciatlas/flowpact@v0.29.1
         with:
           mode: lint
           plugins: "false"
-          impact: ${{ inputs.impact }}
+          remotes: fetch
+          impact: ${{ github.event.repository.custom_properties['action-publishing'] == 'true' && 'auto' || 'off' }}
+          report-sarif: flowpact.sarif
+          report-json: flowpact.json
+      - name: Read Report
+        id: report
+        if: ${{ !cancelled() }}
+        env:
+          SARIF: ${{ steps.flowpact.outputs.report-sarif }}
+          REPORT: ${{ steps.flowpact.outputs.report-json }}
+        run: |
+          if [[ -n "$SARIF" && -f "$SARIF" ]]; then
+            echo "sarif=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$REPORT" && -f "$REPORT" ]] && grep -q 'FP612' "$REPORT"; then
+            echo "::notice::The remotes lockfile lacks a reference the workflows use, or has one nothing uses."
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save SARIF Report
+        if: ${{ !cancelled() && steps.report.outputs.sarif == 'true' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: flowpact-sarif
+          path: ${{ steps.flowpact.outputs.report-sarif }}
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # Runs nothing from the repository and checks nothing out: it uploads the check's report.
+  sarif:
+    name: Upload SARIF
+    needs: check
+    if: >-
+      !cancelled() && needs.check.outputs.sarif == 'true'
+      && (
+        github.event_name == 'push'
+        || (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        )
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # Upload the SARIF report to code scanning
+      actions: read # Let upload-sarif read the workflow run
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Download SARIF Report
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: flowpact-sarif
+          path: ${{ runner.temp }}/flowpact-sarif
+      - name: Upload SARIF Report
+        uses: github/codeql-action/upload-sarif@v4.39.3
+        with:
+          sarif_file: ${{ runner.temp }}/flowpact-sarif
+          category: flowpact
+
+  update:
+    name: Update Remotes Lockfile
+    needs: check
+    # After a check that ran, failed or passed, on a pull request from a branch of this repository:
+    # a stale lockfile is only a warning. Fork pull requests get no OIDC token for the commit, and
+    # the merge queue has no branch to update.
+    if: >-
+      !cancelled() && needs.check.outputs.stale == 'true'
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Check out the repository and read the remote interfaces
+    outputs:
+      # The lockfile's path when the update changed it, read by the commit job
+      path: ${{ steps.update.outputs.path }}
+    env:
+      # Marks the update commit, so an update that doesn't settle the lockfile isn't committed again.
+      FIX_TRAILER: "Remotes-Lockfile-Fixed-By: ${{ github.workflow }}"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      # The pull request's head, because the update is committed on top of it.
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      # The release's npm package, verified against the attestation flowpact's release workflow
+      # publishes, so the CLI is the release's own build. It bundles its dependencies, and needs
+      # Node 22 or later.
+      - name: Install flowpact CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="$RUNNER_TEMP/flowpact-cli"
+          package="$dir/flowpact-$FLOWPACT_VERSION.tgz"
+          mkdir -p "$dir"
+          gh release download "v$FLOWPACT_VERSION" --repo ciatlas/flowpact \
+            --pattern "flowpact-$FLOWPACT_VERSION.tgz" --dir "$dir"
+          gh attestation verify "$package" --repo ciatlas/flowpact
+          tar -xzf "$package" -C "$dir"
+          if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
+            echo "::error::flowpact needs Node 22 or later, and the runner has $(node --version)."
+            exit 1
+          fi
+          echo "FLOWPACT_CLI=$dir/package/dist/index.js" >> "$GITHUB_ENV"
+      - name: Update Remotes Lockfile
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if grep -qxF "$FIX_TRAILER" <<< "$(git log -1 --format=%B)"; then
+            echo "::error::The head commit is already a remotes lockfile update, but the check still finds it stale. Nothing was updated, to avoid a loop. Run flowpact remotes update and commit the result."
+            exit 1
+          fi
+          node "$FLOWPACT_CLI" remotes update
+          git add --all
+          mapfile -d '' changed < <(git diff --cached --no-renames --name-only -z)
+          if (( ${#changed[@]} == 0 )); then
+            echo "::notice::flowpact remotes update changed nothing, so there is nothing to commit."
+            exit 0
+          fi
+          git diff --cached
+          if (( ${#changed[@]} != 1 )); then
+            echo "::error::flowpact remotes update changed ${#changed[@]} files, not just the lockfile. Nothing was committed."
+            exit 1
+          fi
+          case "${changed[0]}" in
+            .github/flowpact/remotes.lock.yaml | .github/flowpact/remotes.lock.yml) ;;
+            *)
+              echo "::error::flowpact remotes update changed ${changed[0]}, which isn't the remotes lockfile. Nothing was committed."
+              exit 1
+              ;;
+          esac
+          if [[ ! -f "${changed[0]}" ]]; then
+            echo "::error::flowpact remotes update deleted ${changed[0]}. Nothing was committed."
+            exit 1
+          fi
+          echo "path=${changed[0]}" >> "$GITHUB_OUTPUT"
+      - name: Save Remotes Lockfile
+        if: steps.update.outputs.path != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: flowpact-remotes-lock
+          path: ${{ steps.update.outputs.path }}
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # Checks nothing out and runs nothing from the repository: it commits the update job's lockfile.
+  #
+  # No concurrency group: the commit only lands if the branch didn't move, and a group shared with
+  # the check job would let the run that the commit starts cancel it.
+  commit:
+    name: Commit Remotes Lockfile
+    needs: update
+    if: ${{ !cancelled() && needs.update.outputs.path != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    env:
+      FIX_TRAILER: "Remotes-Lockfile-Fixed-By: ${{ github.workflow }}"
+      LOCKFILE: ${{ needs.update.outputs.path }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Download Remotes Lockfile
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: flowpact-remotes-lock
+          path: ${{ runner.temp }}/flowpact-remotes-lock
+      # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
+      # pull request can't add or weaken them. The token is revoked when the job ends.
+      #
+      # flowpact-lock.sts.yaml accepts only released versions of this file, at refs/tags/v...; this
+      # repository's own caller runs the pull request's copy, at refs/pull/<n>/merge, and requests
+      # flowpact-lock.shared. github.workflow_ref names the caller.
+      - name: Get Commit Token
+        id: sts
+        continue-on-error: true
+        uses: step-security/octo-sts-action@v1.1.1
+        with:
+          scope: ${{ github.repository_owner }}
+          identity: ${{ startsWith(github.workflow_ref, 'actions-fyi/shared-workflows/') && 'flowpact-lock.shared' || 'flowpact-lock' }}
+      - name: Report Missing Commit Token
+        if: steps.sts.outcome != 'success'
+        run: |
+          echo "::error::Octo STS granted no token to commit the remotes lockfile. Run flowpact remotes update and push the result."
+          exit 1
+      # Committed through the API rather than pushed, so GitHub signs the commit, and the branch
+      # only moves if nothing was pushed to it since this run started. Renovate must list the
+      # commit's author, octo-sts[bot], in gitIgnoredAuthors, or it stops updating the branch.
+      - name: Commit Remotes Lockfile
+        env:
+          GH_TOKEN: ${{ steps.sts.outputs.token }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          file="$RUNNER_TEMP/flowpact-remotes-lock/$(basename -- "$LOCKFILE")"
+          request="$RUNNER_TEMP/request.json"
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg branch "$HEAD_REF" \
+            --arg head "$HEAD_SHA" \
+            --arg path "$LOCKFILE" \
+            --rawfile contents <(base64 -w0 -- "$file") \
+            --arg body "Updated with flowpact remotes update, so the lockfile records every remote workflow and action the workflows call.
+
+          $FIX_TRAILER" \
+            '{
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+              variables: {input: {
+                branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+                expectedHeadOid: $head,
+                message: {headline: "ci: update the flowpact remotes lockfile", body: $body},
+                fileChanges: {additions: [{path: $path, contents: $contents}]}
+              }}
+            }' > "$request"
+          if ! oid=$(gh api graphql --input "$request" --jq '.data.createCommitOnBranch.commit.oid'); then
+            echo "::error::Couldn't commit the remotes lockfile. If the branch moved since this run started, the new push gets its own run."
+            exit 1
+          fi
+          echo "::notice::Committed the remotes lockfile as $oid. Its own run checks the result."
+
+  # Checks nothing out and runs nothing from the repository: it reports the check's failure.
+  issue:
+    name: Report Failure
+    needs: check
+    if: ${{ !cancelled() && needs.check.result == 'failure' && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    # Queued, not cancelled: two quick pushes never both open an issue.
+    concurrency:
+      group: flowpact-issue-${{ github.workflow_ref }}-${{ github.ref }}
+    permissions:
+      issues: write # Open the issue, or comment on the open one
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Open or Update Issue
+        uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            const branch = context.ref.replace(/^refs\/heads\//, '');
+            const title = `Workflow data flow check fails on ${branch}`;
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `flowpact found errors in ${context.sha.slice(0, 7)} on \`${branch}\`.`,
+              '',
+              `The run's annotations and job summary list them: ${run}`,
+            ].join('\n');
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: 'open',
+              creator: 'github-actions[bot]',
+              per_page: 100,
+            });
+            const open = issues.find((issue) => !issue.pull_request && issue.title === title);
+            if (open) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body });
+              core.notice(`Commented on #${open.number}.`);
+            } else {
+              const { data } = await github.rest.issues.create({ ...context.repo, title, body });
+              core.notice(`Opened #${data.number}.`);
+            }
