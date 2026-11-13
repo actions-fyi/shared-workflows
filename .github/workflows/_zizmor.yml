@@ -15,6 +15,12 @@ name: Audit
 #   contents: read          # check out the repository
 #   actions: read           # let upload-sarif read the workflow run
 #
+# In private and internal repositories, code scanning needs GitHub Code Security, so the results
+# aren't uploaded there, and zizmor reports them as annotations instead. This matches _codeql.yml,
+# which skips those repositories. Without the upload, zizmor's exit status decides the job,
+# where in a public repository the action never fails on findings and code scanning decides
+# what blocks a merge.
+#
 # Known caveat: code scanning keys an analysis on the workflow path and the job, and those come
 # from the caller. When pull requests run through one caller (e.g. the org ruleset's) and pushes
 # to the default branch through another (e.g. the push caller from actions-fyi/.github), the two
@@ -91,6 +97,9 @@ jobs:
                 - pr-metadata.yml
           EOF
           echo "path=$config" >> "$GITHUB_OUTPUT"
+      # advanced-security uploads the SARIF results to code scanning, which a private or internal
+      # repository only has with GitHub Code Security; see the top. There, annotations report the
+      # results instead. The action only accepts annotations with advanced-security off.
       - name: Run zizmor 🌈
         uses: zizmorcore/zizmor-action@v0.8.1
         with:
@@ -99,3 +108,5 @@ jobs:
           persona: pedantic
           min-severity: low
           min-confidence: medium
+          advanced-security: ${{ !github.event.repository.private }}
+          annotations: ${{ github.event.repository.private }}
