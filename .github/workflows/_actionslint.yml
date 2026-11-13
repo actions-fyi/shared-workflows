@@ -18,8 +18,7 @@ name: Lint GitHub Actions
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   contents: read        # changes: compare the changes; actions: read the workflow files
-#   pull-requests: write  # actions: post findings as review comments
+#   contents: read  # changes: compare the changes; actions: read the workflow files
 on:
   workflow_call:
 
@@ -81,7 +80,6 @@ jobs:
       group: actionslint-${{ github.ref }}
     permissions:
       contents: read # Read workflow files
-      pull-requests: write # Post findings as review comments
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
@@ -93,5 +91,3 @@ jobs:
           persist-credentials: false
       - name: Lint GitHub Actions Workflows
         uses: kjanat/actionlint@v1.17.1
-        with:
-          review: true

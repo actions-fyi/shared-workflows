@@ -14,5 +14,4 @@ jobs:
     # The union of what the jobs of _actionslint.yml declare; a called job can't get more.
     permissions:
       contents: read # Compare the changes and read the workflow files
-      pull-requests: write # Post findings as review comments
     uses: $/.github/workflows/_actionslint.yml
