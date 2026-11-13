@@ -27,6 +27,6 @@ jobs:
       contents: read # Check out the repository and fetch the remote interfaces
       security-events: write # Upload the SARIF report to code scanning
       actions: read # Let upload-sarif read the workflow run
-      id-token: write # Exchange an OIDC token with Octo STS to commit contracts and the remotes lockfile
+      id-token: write # Get an Octo STS token to commit contracts and the remotes lockfile
       issues: write # Report a failed check on main
     uses: $/.github/workflows/_flowpact.yml

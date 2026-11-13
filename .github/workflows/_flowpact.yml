@@ -49,10 +49,11 @@ name: Check Workflow Data Flow
 #   because the action doesn't include it and actions.lock can't pin it. The CLI reads the
 #   repository's config, which a pull request can change, so the job holds nothing it could misuse.
 # - commit commits those files to the pull request's branch, after checking again that every path
-#   is under .github/flowpact/contracts/ or is the remotes lockfile. The commit can't use the workflow's
-#   own token, because GitHub starts no workflows for its pushes, so the new head would wait for its
-#   required checks forever. It uses a short-lived token from Octo STS instead, granted by an
-#   org-level trust policy in .github/chainguard/ of actions-fyi/.github with contents: write.
+#   is under .github/flowpact/contracts/ or is the remotes lockfile. The commit can't use the
+#   workflow's own token, because GitHub starts no workflows for its pushes, so the new head would
+#   wait for its required checks forever. It uses a short-lived token from Octo STS instead,
+#   granted by an org-level trust policy in .github/chainguard/ of actions-fyi/.github with
+#   contents: write.
 #   Callers run a released version of this file, at refs/tags/v..., which flowpact-lock.sts.yaml
 #   (identity flowpact-lock) matches; this repository's own caller runs the pull request's copy,
 #   which only flowpact-lock.shared.sts.yaml (identity flowpact-lock.shared) matches. A token can't
@@ -94,7 +95,8 @@ jobs:
   check:
     name: Data Flow
     runs-on: ubuntu-latest
-    # Per caller: in a repository with two callers, its own and a ruleset's, neither cancels the other.
+    # Per caller: in a repository with two callers, its own and a ruleset's, neither cancels the
+    # other.
     concurrency:
       group: flowpact-check-${{ github.workflow_ref }}-${{ github.ref }}
       cancel-in-progress: true
