@@ -14,10 +14,19 @@ name: Check Workflow Data Flow
 # green. actionlint checks each file on its own; flowpact checks the interfaces between them. It
 # reads the repository's .github/flowpact/flowpact.config.yml for overrides, where one exists.
 #
-# It lints, and doesn't check contracts or grade impact: contracts are interface snapshots a
-# repository commits under .github/flowpact/, which most repositories don't have, and a ruleset
-# workflow can't pass a repository its own inputs. Pull request titles are checked by Check
-# Metadata already.
+# It lints, and doesn't check contracts: contracts are interface snapshots a repository commits
+# under .github/flowpact/, which most repositories don't have.
+#
+# Impact grading is off unless the caller turns it on with the impact input. It compares the
+# workflows and actions a repository publishes for others to use with the pull request's base,
+# and fails when the change needs a bigger version bump than the pull request title declares
+# (`fix:` patch, `feat:` minor, `type!:` major, other types none). That only matters for a
+# repository that publishes them, like this one, so the org ruleset's caller leaves it off. A
+# publishing repository's own caller turns it on, and also runs on the edited activity type, so
+# a corrected title is graded again. flowpact grades reusable workflows without a `_` prefix and a
+# root action.yml unless .github/flowpact/flowpact.config.yml lists others under impact.publish,
+# and it reads those settings from the base branch, so a pull request can't relax its own grade.
+# Merge groups aren't graded: the pull request was.
 #
 # Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
 # it must also run on merge_group, where it lints the merged result. It has no paths filter: a
@@ -29,6 +38,14 @@ name: Check Workflow Data Flow
 #   contents: read  # check out the repository
 on:
   workflow_call:
+    inputs:
+      impact:
+        description: >-
+          Whether to grade the change's impact on the published workflows and actions against the
+          pull request title: off, or auto for repositories that publish them; see the top.
+        type: string
+        required: false
+        default: "off"
 
 permissions: {}
 
@@ -58,3 +75,4 @@ jobs:
         with:
           mode: lint
           plugins: "false"
+          impact: ${{ inputs.impact }}
