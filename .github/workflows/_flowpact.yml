@@ -89,8 +89,10 @@ permissions: {}
 
 env:
   # The CLI release the update job runs, and the one the action below is pinned to. Keep both on
-  # the same version.
-  FLOWPACT_VERSION: 0.29.1
+  # the same version: before 1.0 a release can change what's reported, so the check could find
+  # drift the update job can't fix. Renovate updates the two separately.
+  # renovate: datasource=github-releases depName=ciatlas/flowpact
+  FLOWPACT_VERSION: v0.29.2
   # Whether the repository publishes workflows or actions for others: contracts and impact grading.
   PUBLISHING: ${{ github.event.repository.custom_properties['action-publishing'] == 'true' }}
 
@@ -261,11 +263,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The release tag is vX.Y.Z; its npm package is flowpact-X.Y.Z.tgz.
           dir="$RUNNER_TEMP/flowpact-cli"
-          package="$dir/flowpact-$FLOWPACT_VERSION.tgz"
+          package="$dir/flowpact-${FLOWPACT_VERSION#v}.tgz"
           mkdir -p "$dir"
-          gh release download "v$FLOWPACT_VERSION" --repo ciatlas/flowpact \
-            --pattern "flowpact-$FLOWPACT_VERSION.tgz" --dir "$dir"
+          gh release download "$FLOWPACT_VERSION" --repo ciatlas/flowpact \
+            --pattern "flowpact-${FLOWPACT_VERSION#v}.tgz" --dir "$dir"
           gh attestation verify "$package" --repo ciatlas/flowpact
           tar -xzf "$package" -C "$dir"
           if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
