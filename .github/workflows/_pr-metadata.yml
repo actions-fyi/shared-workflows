@@ -222,7 +222,7 @@ jobs:
       id-token: write # Log in to OpenBao
       issues: write # Escalate a flag; a workflow_run event carries no pull request, so as an issue
       pull-requests: write # Declared by the shared workflow
-    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.1.0
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.2.0
     secrets:
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
