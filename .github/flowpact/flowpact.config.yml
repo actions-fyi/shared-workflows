@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://ciatlas.github.io/flowpact/schemas/config/v1.json
+# Read by _flowpact.yml through this repository's flowpact.yml; see there.
+version: 1
+
+impact:
+  # The shared workflows other repositories call by tag, graded because this repository's custom
+  # property action-publishing is true. By default flowpact grades only reusable workflows without
+  # a _ prefix, which this repository has none of. Impact settings are read from the base branch,
+  # so a change here applies once it's merged.
+  publish: [.github/workflows/_*.yml]
