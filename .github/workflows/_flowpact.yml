@@ -17,14 +17,17 @@ name: Check Workflow Data Flow
 # Remote interfaces: the interfaces of the workflows and actions a repository calls from other
 # repositories are recorded in .github/flowpact/remotes.lock.yaml, which flowpact remotes update
 # writes. The check reads that lockfile and fetches the interfaces of references it lacks for the
-# run, so every call is checked. A reference the lockfile lacks, or an entry nothing uses, is a
-# warning (FP612); on a pull request, a version change that breaks a call fails the check.
+# run, so every call is checked, in lint and check mode alike. A reference the lockfile lacks, or
+# an entry nothing uses, is a warning (FP612); on a pull request, a version change that breaks a
+# call fails the check.
 # flowpact reports no FP612 without a lockfile, so a missing one counts as stale too.
 #
-# Contracts: the check runs in check mode, which lints and also compares the workflows and actions
-# with the interface snapshots committed under .github/flowpact/contracts/, which flowpact generate
-# writes, and fails when they drifted. Only a repository that publishes them for others commits
-# contracts, so only there does the update job run flowpact generate.
+# Contracts: a contract records a workflow's or action's interface, so a change that breaks its
+# callers is caught. Only a repository that publishes workflows or actions for others has callers,
+# so only there does the check run in check mode, which lints and also compares every workflow and
+# action with its interface snapshot committed under .github/flowpact/contracts/, and fails when one
+# is missing or drifted; the update job then runs flowpact generate. Everywhere else it runs in lint
+# mode, which reads no contracts: in check mode, every workflow without one is an error (FP801).
 #
 # Publishing repositories are the ones whose custom property action-publishing is true. There,
 # impact grading is on too. It
@@ -38,8 +41,8 @@ name: Check Workflow Data Flow
 # groups aren't graded: the pull request was.
 #
 # Jobs, each with only what it needs:
-# - check runs flowpact check with a read-only token. It runs on every event, and writes a SARIF
-#   report.
+# - check runs flowpact check, or lint outside publishing repositories, with a read-only token. It
+#   runs on every event, and writes a SARIF report.
 # - sarif uploads that report, and only that file, to code scanning, on pull requests from a branch
 #   of this repository and on pushes. A fork's pull request gets a read-only token. Not in private
 #   and internal repositories, where code scanning needs GitHub Code Security, as _codeql.yml and
@@ -133,7 +136,7 @@ jobs:
         id: flowpact
         uses: ciatlas/flowpact@v0.29.2
         with:
-          mode: check
+          mode: ${{ env.PUBLISHING == 'true' && 'check' || 'lint' }}
           plugins: "false"
           remotes: fetch
           impact: ${{ env.PUBLISHING == 'true' && 'auto' || 'off' }}
