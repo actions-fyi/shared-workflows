@@ -41,7 +41,10 @@ name: Check Workflow Data Flow
 # - check runs flowpact check with a read-only token. It runs on every event, and writes a SARIF
 #   report.
 # - sarif uploads that report, and only that file, to code scanning, on pull requests from a branch
-#   of this repository and on pushes. A fork's pull request gets a read-only token.
+#   of this repository and on pushes. A fork's pull request gets a read-only token. Not in private
+#   and internal repositories, where code scanning needs GitHub Code Security, as _codeql.yml and
+#   _zizmor.yml do: there, the check's annotations and job summary report the findings, and the
+#   issue job reports a failed check on a push.
 # - update runs on a pull request from a branch of this repository when the check found the remotes
 #   lockfile stale or, in a publishing repository, the contracts drifted. It runs flowpact remotes
 #   update and, in a publishing repository, flowpact generate, with a read-only token, and saves
@@ -180,6 +183,7 @@ jobs:
     needs: check
     if: >-
       !cancelled() && needs.check.outputs.sarif == 'true'
+      && !github.event.repository.private
       && (
         github.event_name == 'push'
         || (
