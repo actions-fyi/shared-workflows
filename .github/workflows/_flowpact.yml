@@ -284,8 +284,10 @@ jobs:
             node "$FLOWPACT_CLI" remotes update
             commands+=("flowpact remotes update")
           fi
+          # generate loads the plugins the config lists, which run JavaScript from the pull request;
+          # remotes update loads none. --no-plugins matches the check job's plugins: false.
           if [[ "$DRIFT" == true && "$PUBLISHING" == true ]]; then
-            node "$FLOWPACT_CLI" generate
+            node "$FLOWPACT_CLI" generate --no-plugins
             commands+=("flowpact generate")
           fi
           if (( ${#commands[@]} == 2 )); then
