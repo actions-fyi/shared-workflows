@@ -1,4 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>actions-fyi/.github"]
+  "extends": ["github>actions-fyi/.github"],
+  "packageRules": [
+    {
+      "description": "_flowpact.yml runs the flowpact action and the CLI release of the same version, so update both together",
+      "matchPackageNames": ["ciatlas/flowpact"],
+      "groupName": "flowpact"
+    }
+  ]
 }
