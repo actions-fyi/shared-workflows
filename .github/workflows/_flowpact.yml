@@ -131,7 +131,7 @@ jobs:
       # update job can't commit to, such as a fork's.
       - name: Check Workflow Data Flow
         id: flowpact
-        uses: ciatlas/flowpact@v0.29.1
+        uses: ciatlas/flowpact@v0.29.2
         with:
           mode: check
           plugins: "false"
