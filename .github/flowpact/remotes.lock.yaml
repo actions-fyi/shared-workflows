@@ -166,8 +166,8 @@ remotes:
       - artifact-id
       - artifact-url
       - artifact-digest
-  ciatlas/flowpact@v0.29.1:
-    sha: d8b6afa9d25b9cf97a5ee56def896f8f9669a1df
+  ciatlas/flowpact@v0.29.2:
+    sha: ba8da0230576ac246b387193588d5cdaef9361dc
     kind: action
     using: node24
     inputs:
