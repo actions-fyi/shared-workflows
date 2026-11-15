@@ -68,6 +68,11 @@ on:
 
 permissions: {}
 
+env:
+  # Only installed where Node.js doesn't ship Corepack; see the Enable Corepack step.
+  # renovate: datasource=npm depName=corepack
+  COREPACK_VERSION: 0.36.0
+
 defaults:
   run:
     shell: bash
@@ -227,11 +232,12 @@ jobs:
         if: needs.project.outputs.manager == 'bun'
         uses: step-security/setup-bun@v2.1.3
       # Corepack provides pnpm and Yarn in the version packageManager pins, or its own default
-      # without one. Node.js 25 and later no longer ship it, so it's installed there.
+      # without one. Node.js 25 and later no longer ship it, so it's installed there, in the
+      # version pinned at the top, which Renovate updates.
       - name: Enable Corepack
         if: needs.project.outputs.manager == 'pnpm' || needs.project.outputs.manager == 'yarn'
         run: |
-          command -v corepack > /dev/null || npm install --global corepack
+          command -v corepack > /dev/null || npm install --global "corepack@$COREPACK_VERSION"
           corepack enable
       - name: Install Dependencies
         if: needs.project.outputs.install == 'true'
