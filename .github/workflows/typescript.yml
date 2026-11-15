@@ -1,0 +1,32 @@
+name: Check TypeScript
+# This repository's caller of its own shared workflow _typescript.yml, which holds the check; see
+# there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
+# ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups.
+#
+# This repository has no package of its own, so the two calls test the workflow's two paths:
+# - No Package checks the repository's root, which has no package.json: the check is skipped and
+#   the call passes.
+# - Fixture checks .github/fixtures/typescript, a package without dependencies whose lockfile is
+#   committed: it is installed with npm ci, and its typecheck and test scripts run.
+on:
+  pull_request:
+  merge_group:
+
+permissions: {}
+
+jobs:
+  no-package:
+    name: No Package
+    # What the jobs of _typescript.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read package.json and the lockfile, and check the package out
+    uses: $/.github/workflows/_typescript.yml
+
+  fixture:
+    name: Fixture
+    # What the jobs of _typescript.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read package.json and the lockfile, and check the package out
+    uses: $/.github/workflows/_typescript.yml
+    with:
+      working-directory: .github/fixtures/typescript
