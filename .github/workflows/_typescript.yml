@@ -10,8 +10,10 @@ name: Check TypeScript
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
 # Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
-# it must also run on merge_group, where it checks the merged result. It isn't meant for pushes:
-# the gate belongs on the pull request, and nothing here is cached for a later run to reuse.
+# it must also run on merge_group, where it checks the merged result. The gate is the pull
+# request's run. A caller may also run it on push, as typescript.yml of actions-fyi/.github does for
+# main: that reports a default branch that broke without a pull request, or through a dependency
+# that changed since, and gates nothing.
 #
 # Callers can't filter by paths: a ruleset ignores paths filters, and a required check that never
 # runs would block merging. So the workflow always runs, and the project job decides whether there
@@ -200,10 +202,12 @@ jobs:
     timeout-minutes: 30
     # github.ref is refs/pull/<number>/merge for a pull request and a unique
     # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, so the two
-    # never share a group, and only a pull request's own earlier run is cancelled.
+    # never share a group, and only a pull request's own earlier run is cancelled. A push's ref
+    # is its branch, so pushes to one branch run one after another, and none is cancelled: each
+    # commit on main keeps its own result.
     concurrency:
       group: typescript-${{ github.ref }}-${{ inputs.working-directory }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     permissions:
       contents: read # Check the package out
     defaults:
