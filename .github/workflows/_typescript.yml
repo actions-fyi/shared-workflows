@@ -1,0 +1,303 @@
+name: Check TypeScript
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the check of a Node.js package: install its locked
+# dependencies and run its own typecheck, lint, format, build and test scripts. Workflows in other
+# repositories, ruleset workflows included, call it by full path and tag: in a ruleset workflow,
+# GitHub resolves `$/` against the target repository, where this file doesn't exist. This
+# repository's own typescript.yml calls it with `$/`. It runs as part of the caller's run, in the
+# target repository's context: the caller's event, token and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
+# it must also run on merge_group, where it checks the merged result. It isn't meant for pushes:
+# the gate belongs on the pull request, and nothing here is cached for a later run to reuse.
+#
+# Callers can't filter by paths: a ruleset ignores paths filters, and a required check that never
+# runs would block merging. So the workflow always runs, and the project job decides whether there
+# is a package to check: a package.json in the working directory. If not, the check job is skipped,
+# and the run still succeeds, because the project job does. A package is checked whatever the pull
+# request changes, because nearly any file can break a build. The name says TypeScript because
+# that's what the org writes; a plain JavaScript package is checked the same way.
+#
+# What the check job does, in order:
+# - Sets up Node.js in the version the package asks for: .nvmrc, then .node-version, then
+#   engines.node or volta.node of package.json, and the current LTS when it names none.
+# - Installs with the package manager the package uses, and only from its lockfile: npm ci, pnpm
+#   install --frozen-lockfile, yarn install --immutable (--frozen-lockfile for Yarn 1) or bun
+#   install --frozen-lockfile. The packageManager field of package.json names the manager, and the
+#   lockfile does when the field is missing. pnpm and Yarn come from Corepack, in the version that
+#   field pins. A package that declares dependencies but commits no lockfile fails: its installs
+#   aren't reproducible. One that declares none needs no lockfile and installs nothing.
+# - Verifies the registry signatures and provenance attestations of what npm installed, with npm
+#   audit signatures, so a package that was tampered with after publishing fails. Only npm has
+#   this; the other managers skip it. It doesn't audit for known vulnerabilities: a new advisory
+#   would fail unrelated pull requests, and Renovate and Dependabot alerts report those.
+# - Runs each script of the scripts input that package.json defines, in the given order, and skips
+#   the ones it doesn't. Every script runs even after one failed, so a pull request sees all its
+#   failures at once; the job summary lists each result, and each failure is an error annotation.
+#   A package that defines none of them passes with a notice.
+# - Fails when a tracked file changed: a script that rewrites the lockfile, or generated files that
+#   weren't committed. Untracked files are ignored, since build output often isn't in .gitignore.
+#
+# The check job runs the repository's code: install scripts of its dependencies, and its own
+# scripts, all of which a pull request, a Renovate update among them, can change. So it holds a
+# read-only token and no secrets, checks out without persisting credentials, and restores and saves
+# no cache: a cache written by a pull request's run would only ever be read by that pull request.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   contents: read  # project: read package.json and the lockfile; check: check the package out
+on:
+  workflow_call:
+    inputs:
+      scripts:
+        description: >-
+          The package.json scripts to run, in this order, separated by spaces or commas. A script
+          the package doesn't define is skipped.
+        type: string
+        required: false
+        default: typecheck lint format:check build test
+      working-directory:
+        description: >-
+          The directory of the package to check, relative to the repository's root. It must hold
+          package.json and the lockfile.
+        type: string
+        required: false
+        default: .
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  project:
+    name: Find Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # Read package.json and the lockfile
+    outputs:
+      check: ${{ steps.project.outputs.check }}
+      manager: ${{ steps.project.outputs.manager }}
+      install: ${{ steps.project.outputs.install }}
+      node-version: ${{ steps.project.outputs.node-version }}
+      node-version-file: ${{ steps.project.outputs.node-version-file }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Only reads files; nothing from the repository runs here. The outputs are fixed words and
+      # paths built from the caller's working-directory, never text from package.json.
+      - name: Find Package
+        id: project
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [[ -d "$WORKING_DIRECTORY" ]] \
+            || fail "The working directory $WORKING_DIRECTORY doesn't exist."
+          cd "$WORKING_DIRECTORY"
+          where="$WORKING_DIRECTORY"
+          [[ "${where%/}" == "." ]] && where="the repository's root"
+          if [[ ! -f package.json ]]; then
+            echo "::notice::No package.json in $where. Nothing to check."
+            echo "check=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jq -e 'type == "object"' package.json > /dev/null \
+            || fail "package.json isn't a JSON object."
+
+          # packageManager is "<name>@<version>", optionally with a hash. Without it, the lockfile
+          # tells, in this order when a package has more than one.
+          manager="$(jq -r '(.packageManager // "") | tostring | split("@")[0] // ""' package.json)"
+          lockfile=""
+          has() {
+            local file
+            for file in "$@"; do
+              if [[ -f "$file" ]]; then
+                lockfile="$file"
+                return 0
+              fi
+            done
+            return 1
+          }
+          case "$manager" in
+            npm) has package-lock.json npm-shrinkwrap.json || true ;;
+            pnpm) has pnpm-lock.yaml || true ;;
+            yarn) has yarn.lock || true ;;
+            bun) has bun.lock bun.lockb || true ;;
+            "")
+              if has package-lock.json npm-shrinkwrap.json; then
+                manager=npm
+              elif has pnpm-lock.yaml; then
+                manager=pnpm
+              elif has yarn.lock; then
+                manager=yarn
+              elif has bun.lock bun.lockb; then
+                manager=bun
+              else
+                manager=npm
+              fi
+              ;;
+            *) fail "package.json names the package manager $manager, which this check doesn't support. It supports npm, pnpm, yarn and bun." ;;
+          esac
+
+          install=true
+          if [[ -z "$lockfile" ]]; then
+            dependencies="$(jq '[.dependencies, .devDependencies, .optionalDependencies]
+              | map(select(type == "object") | length) | add // 0' package.json)"
+            (( dependencies == 0 )) \
+              || fail "package.json declares dependencies, but there's no $manager lockfile next to it. Commit the lockfile, so every install gets the same versions."
+            echo "::notice::package.json declares no dependencies and has no lockfile, so nothing is installed."
+            install=false
+          fi
+
+          # setup-node reads a version file relative to the repository's root.
+          prefix="${WORKING_DIRECTORY%/}/"
+          [[ "$prefix" == "./" ]] && prefix=""
+          node_version=""
+          node_version_file=""
+          if [[ -f .nvmrc ]]; then
+            node_version_file="${prefix}.nvmrc"
+          elif [[ -f .node-version ]]; then
+            node_version_file="${prefix}.node-version"
+          elif jq -e '(.engines.node // .volta.node // "") | tostring | length > 0' package.json > /dev/null; then
+            node_version_file="${prefix}package.json"
+          else
+            node_version="lts/*"
+          fi
+
+          {
+            echo "check=true"
+            echo "manager=$manager"
+            echo "install=$install"
+            echo "node-version=$node_version"
+            echo "node-version-file=$node_version_file"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Checking the package in $where with $manager${lockfile:+, locked by $lockfile}."
+
+  check:
+    name: TypeScript
+    needs: project
+    if: needs.project.outputs.check == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # github.ref is refs/pull/<number>/merge for a pull request and a unique
+    # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, so the two
+    # never share a group, and only a pull request's own earlier run is cancelled.
+    concurrency:
+      group: typescript-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: true
+    permissions:
+      contents: read # Check the package out
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      MANAGER: ${{ needs.project.outputs.manager }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # No cache; see the top. setup-node would otherwise cache npm's when packageManager names it.
+      - name: Set Up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ needs.project.outputs.node-version }}
+          node-version-file: ${{ needs.project.outputs.node-version-file }}
+          package-manager-cache: false
+      - name: Set Up Bun
+        if: needs.project.outputs.manager == 'bun'
+        uses: step-security/setup-bun@v2.1.3
+      # Corepack provides pnpm and Yarn in the version packageManager pins, or its own default
+      # without one. Node.js 25 and later no longer ship it, so it's installed there.
+      - name: Enable Corepack
+        if: needs.project.outputs.manager == 'pnpm' || needs.project.outputs.manager == 'yarn'
+        run: |
+          command -v corepack > /dev/null || npm install --global corepack
+          corepack enable
+      - name: Install Dependencies
+        if: needs.project.outputs.install == 'true'
+        run: |
+          case "$MANAGER" in
+            npm) npm ci ;;
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn)
+              if [[ "$(yarn --version)" == 1.* ]]; then
+                yarn install --frozen-lockfile
+              else
+                yarn install --immutable
+              fi
+              ;;
+            bun) bun install --frozen-lockfile ;;
+          esac
+      # Fails when a signature or attestation doesn't verify, and passes when there is nothing to
+      # verify: without dependencies npm exits with an error, which isn't a finding.
+      - name: Verify Registry Signatures
+        if: needs.project.outputs.install == 'true' && needs.project.outputs.manager == 'npm'
+        run: |
+          if [[ "$(npm ls --all --parseable 2> /dev/null | wc -l)" -le 1 ]]; then
+            echo "::notice::No dependencies are installed, so there are no signatures to verify."
+            exit 0
+          fi
+          npm audit signatures
+      - name: Run Scripts
+        env:
+          SCRIPTS: ${{ inputs.scripts }}
+        run: |
+          read -r -a names <<< "${SCRIPTS//,/ }"
+          failed=()
+          ran=0
+          {
+            echo "### Scripts"
+            echo
+            echo "| Script | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for name in "${names[@]}"; do
+            if ! jq -e --arg name "$name" '.scripts[$name] | type == "string"' package.json > /dev/null; then
+              echo "| \`$name\` | not defined, skipped |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            ran=$((ran + 1))
+            status=0
+            echo "::group::$MANAGER run $name"
+            "$MANAGER" run "$name" || status=$?
+            echo "::endgroup::"
+            if (( status == 0 )); then
+              echo "| \`$name\` | passed |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$name\` | **failed** (exit code $status) |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::The $name script failed with exit code $status. See its output above."
+              failed+=("$name")
+            fi
+          done
+          if (( ran == 0 )); then
+            echo "::notice::package.json defines none of these scripts, so none ran: ${names[*]}"
+          fi
+          (( ${#failed[@]} == 0 ))
+      - name: Check for Changed Files
+        run: |
+          changed="$(git status --porcelain --untracked-files=no -- .)"
+          if [[ -n "$changed" ]]; then
+            echo "::error::Installing or running the scripts changed tracked files. Commit the result, or stop the scripts from writing to them."
+            echo "$changed"
+            exit 1
+          fi

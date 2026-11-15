@@ -1,0 +1,10 @@
+{
+  "name": "typescript-check-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A package without dependencies that typescript.yml checks with _typescript.yml.",
+  "scripts": {
+    "typecheck": "node --version",
+    "test": "node --eval \"process.exit(0)\""
+  }
+}
