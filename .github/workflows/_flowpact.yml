@@ -223,6 +223,10 @@ jobs:
     # a stale lockfile is only a warning. Contracts only in a publishing repository; see the top.
     # Fork pull requests get no OIDC token for the commit, and the merge queue has no branch to
     # update.
+    #
+    # By the time this job gets its turn in the group below, another fix job may have committed to
+    # the branch. So it works on the branch's head as it is then, not on the commit the check ran
+    # on: an update that changes nothing there has nothing to commit.
     if: >-
       !cancelled()
       && (
@@ -235,13 +239,20 @@ jobs:
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # One group for every job that commits to a pull request's branch, in any workflow, so only one
+    # of them runs at a time per pull request. queue: max lets the others wait their turn instead
+    # of replacing each other; it can't be combined with cancel-in-progress.
+    concurrency:
+      group: pr-write-${{ github.event.pull_request.number }}
+      queue: max
     permissions:
       contents: read # Check out the repository and read the remote interfaces
     outputs:
-      # true when the update changed files, which the commit job then commits, and the commands
-      # that changed them, for the commit message
+      # true when the update changed files, which the commit job then commits, the commands that
+      # changed them, for the commit message, and the commit the update was made on
       changed: ${{ steps.update.outputs.changed }}
       commands: ${{ steps.update.outputs.commands }}
+      head: ${{ steps.update.outputs.head }}
     env:
       # Marks the update commit, so an update that doesn't settle the files isn't committed again.
       FIX_TRAILER: "Flowpact-Updated-By: ${{ github.workflow }}"
@@ -250,11 +261,12 @@ jobs:
         uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
-      # The pull request's head, because the update is committed on top of it.
+      # The branch's head now, because the update is committed on top of it. It differs from the
+      # commit the check ran on when something was pushed, or another fix job committed, since.
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.head_ref }}
           persist-credentials: false
       # The release's npm package, verified against the attestation flowpact's release workflow
       # publishes, so the CLI is the release's own build. It bundles its dependencies, and needs
@@ -285,10 +297,7 @@ jobs:
           STALE: ${{ needs.check.outputs.stale }}
           DRIFT: ${{ needs.check.outputs.drift }}
         run: |
-          if grep -qxF "$FIX_TRAILER" <<< "$(git log -1 --format=%B)"; then
-            echo "::error::The head commit is already a flowpact update, but the check still finds the contracts or the remotes lockfile out of date. Nothing was updated, to avoid a loop. Run flowpact remotes update and flowpact generate, and commit the result."
-            exit 1
-          fi
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           commands=()
           if [[ "$STALE" == true ]]; then
             node "$FLOWPACT_CLI" remotes update
@@ -310,6 +319,12 @@ jobs:
           if (( ${#changed[@]} == 0 )); then
             echo "::notice::flowpact changed nothing, so there is nothing to commit."
             exit 0
+          fi
+          # Only now: a head that is another run's update, and that the update leaves as it is, is
+          # what a job that waited its turn should find.
+          if grep -qxF "$FIX_TRAILER" <<< "$(git log -1 --format=%B)"; then
+            echo "::error::The head commit is already a flowpact update, but flowpact still changes the contracts or the remotes lockfile. Nothing was committed, to avoid a loop. Run flowpact remotes update and flowpact generate, and commit the result."
+            exit 1
           fi
           git diff --cached
           for path in "${changed[@]}"; do
@@ -348,13 +363,20 @@ jobs:
 
   # Checks nothing out and runs nothing from the repository: it commits the update job's files.
   #
-  # No concurrency group: the commit only lands if the branch didn't move, and a group shared with
-  # the check job would let the run that the commit starts cancel it.
+  # In the same group as the update job, but it takes its turn separately, so another fix job can
+  # commit in between. It therefore looks at the branch again: if it moved since the update was
+  # made, nothing is committed, and the new head's own run makes the update.
   commit:
     name: Commit Contracts and Remotes Lockfile
     needs: update
     if: ${{ !cancelled() && needs.update.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
+    # One group for every job that commits to a pull request's branch, in any workflow, so only one
+    # of them runs at a time per pull request. queue: max lets the others wait their turn instead
+    # of replacing each other; it can't be combined with cancel-in-progress.
+    concurrency:
+      group: pr-write-${{ github.event.pull_request.number }}
+      queue: max
     permissions:
       id-token: write # Exchange the job's OIDC token with Octo STS
     env:
@@ -430,13 +452,13 @@ jobs:
           echo "::error::Octo STS granted no token to commit the update. Run flowpact remotes update and flowpact generate, and push the result."
           exit 1
       # Committed through the API rather than pushed, so GitHub signs the commit, and the branch
-      # only moves if nothing was pushed to it since this run started. Renovate must list the
+      # only moves if nothing was pushed to it since the update was made. Renovate must list the
       # commit's author, octo-sts[bot], in gitIgnoredAuthors, or it stops updating the branch.
       - name: Commit Update
         uses: actions/github-script@v9.0.0
         env:
           HEAD_REF: ${{ github.head_ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ needs.update.outputs.head }}
         with:
           github-token: ${{ steps.sts.outputs.token }}
           script: |
@@ -446,6 +468,13 @@ jobs:
             const { additions, deletions } = JSON.parse(
               fs.readFileSync(path.join(staging, 'changes.json'), 'utf8'),
             );
+            const { data: branch } = await github.rest.git.getRef({
+              ...context.repo, ref: `heads/${process.env.HEAD_REF}`,
+            });
+            if (branch.object.sha !== process.env.HEAD_SHA) {
+              core.notice(`The branch moved from ${process.env.HEAD_SHA}, which the update was made on, to ${branch.object.sha}. Nothing was committed; the new head's own run makes the update.`);
+              return;
+            }
             try {
               const { createCommitOnBranch: { commit } } = await github.graphql(`
                 mutation($input: CreateCommitOnBranchInput!) {
@@ -472,7 +501,7 @@ jobs:
                 } });
               core.notice(`Committed the update as ${commit.oid}. Its own run checks the result.`);
             } catch (error) {
-              core.setFailed(`Couldn't commit the update: ${error.message}. If the branch moved since this run started, the new push gets its own run.`);
+              core.setFailed(`Couldn't commit the update: ${error.message}. If the branch moved in the meantime, the new push gets its own run.`);
             }
 
   # Checks nothing out and runs nothing from the repository: it reports the check's failure.
