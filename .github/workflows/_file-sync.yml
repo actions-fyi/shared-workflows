@@ -1,0 +1,142 @@
+name: Sync
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and keeps a repository's copies of the workflows of
+# actions-fyi/.github fresh. Its caller, file-sync.yml of actions-fyi/.github, is distributed to
+# the org's repositories like the other callers there, and runs in each of them. It runs as part of
+# the caller's run, in that repository's context: the caller's event and token.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# A repository pulls; nothing is pushed to it from a central list. So no list of repositories is
+# kept anywhere, and a repository starts being updated when it gets the caller.
+#
+# What the workflows job does:
+# - Checks out the default branch of actions-fyi/.github, the source.
+# - Lists the files in .github/workflows of the repository it runs in, and keeps those that the
+#   source has under the same name. Only existing copies are updated: a workflow the repository
+#   doesn't have is never added, and one that only the repository has is never touched or removed.
+#   The workflow templates of actions-fyi/.github aren't synced: they are in workflow-templates,
+#   which this doesn't read.
+# - Hands that list to step-security/repo-file-sync-action, which opens one pull request in the
+#   repository when a copy differs from the source, and updates that pull request while it is
+#   open. Nothing is pushed to the default branch, so the repository's own checks run on the
+#   change, and its lockfile fix job updates actions.lock on the pull request.
+#
+# The pull request needs a token that can write contents, pull requests and workflow files, which
+# the job's own token can't: it comes from Octo STS, identity file-sync, whose trust policy is
+# .github/chainguard/file-sync.sts.yaml of actions-fyi/.github. Without that policy the job fails
+# with an error that says so.
+#
+# It skips itself in actions-fyi/.github, the source, and in actions-fyi/shared-workflows, whose
+# callers of the same file names call their siblings with `$/` and must not be replaced.
+#
+# The calling job must grant what the workflows job declares, or the call fails before anything
+# runs:
+#   contents: read   # list this repository's workflows
+#   id-token: write  # exchange the job's OIDC token with Octo STS
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: >-
+          Report which copies differ without pushing a branch or opening a pull request.
+        type: boolean
+        required: false
+        default: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  workflows:
+    name: Workflows
+    if: >-
+      github.repository != 'actions-fyi/.github'
+      && github.repository != 'actions-fyi/shared-workflows'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One run per repository at a time; a second one waits, so two never update the same pull
+    # request at once.
+    concurrency:
+      group: file-sync-${{ github.repository }}
+    permissions:
+      contents: read # List this repository's workflows
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      # The source, at the workspace's root: repo-file-sync-action reads the files to sync from the
+      # working directory.
+      - name: Checkout Source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: actions-fyi/.github
+          ref: main
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+      # The names written to the list come from the source's files, never from the repository's:
+      # its file names only decide which of them are kept.
+      - name: List Copies
+        id: copies
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          config="$RUNNER_TEMP/file-sync.yml"
+          existing="$RUNNER_TEMP/existing-workflows.txt"
+          if ! gh api "repos/$REPOSITORY/contents/.github/workflows" \
+            --jq '.[] | select(.type == "file") | .name' > "$existing"; then
+            echo "::notice::$REPOSITORY has no .github/workflows directory. Nothing to sync."
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$REPOSITORY:" > "$config"
+          count=0
+          for file in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [[ -f "$file" ]] || continue
+            if grep -qxF "$(basename "$file")" "$existing"; then
+              echo "  - $file" >> "$config"
+              count=$((count + 1))
+            fi
+          done
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "config=$config" >> "$GITHUB_OUTPUT"
+          if (( count == 0 )); then
+            echo "::notice::$REPOSITORY has no copy of a workflow of actions-fyi/.github. Nothing to sync."
+          else
+            echo "::group::Workflows to keep in sync ($count)"
+            cat "$config"
+            echo "::endgroup::"
+          fi
+      - name: Get Sync Token
+        if: steps.copies.outputs.count != '0'
+        id: sts
+        continue-on-error: true
+        uses: step-security/octo-sts-action@v1.1.1
+        with:
+          scope: ${{ github.repository_owner }}
+          identity: file-sync
+      - name: Report Missing Sync Token
+        if: steps.copies.outputs.count != '0' && steps.sts.outcome != 'success'
+        run: |
+          echo "::error::Octo STS granted no token to open the pull request. Check the trust policy .github/chainguard/file-sync.sts.yaml of actions-fyi/.github."
+          exit 1
+      # The title starts with a Conventional Commits type, which the org's title check requires. No
+      # label is set: the action's default, sync, isn't one of the org's labels.
+      - name: Sync Workflows
+        if: steps.copies.outputs.count != '0' && steps.sts.outcome == 'success'
+        uses: step-security/repo-file-sync-action@v1.21.4
+        with:
+          GH_INSTALLATION_TOKEN: ${{ steps.sts.outputs.token }}
+          GIT_USERNAME: octo-sts[bot]
+          GIT_EMAIL: 157150467+octo-sts[bot]@users.noreply.github.com
+          CONFIG_PATH: ${{ steps.copies.outputs.config }}
+          COMMIT_PREFIX: "ci:"
+          COMMIT_EACH_FILE: false
+          PR_LABELS: false
+          DRY_RUN: ${{ inputs.dry-run }}
