@@ -13,7 +13,7 @@ interface:
       type: string
       required: false
       default: .
-      description: The directory of the Worker to check, relative to the repository's root. It must hold the Wrangler config, package.json and package-lock.json.
+      description: The directory of the Wrangler config, relative to the repository's root. It must hold the Wrangler config, package.json and package-lock.json.
   outputs: {}
 consumers:
   - from: .github/workflows/cloudflare.yml
@@ -22,6 +22,6 @@ consumers:
       - working-directory
     reads: []
   - from: .github/workflows/cloudflare.yml
-    job: no-worker
+    job: no-config
     passes: []
     reads: []

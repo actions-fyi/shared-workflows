@@ -1,4 +1,4 @@
-name: Check TypeScript
+name: Test
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags, and holds the check of a Node.js package: install its locked
 # dependencies and run its own typecheck, lint, format, build and test scripts. Workflows in other

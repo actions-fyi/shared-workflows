@@ -4,8 +4,8 @@ name: Explain Actions Lockfile
 # repositories, by full path and tag, so inside it github.event is the workflow_run payload, and the
 # token and secrets are the base repository's.
 #
-# The caller's trigger: workflow_run on "Check Actions Lockfile" (_actions-lock.yml), completed. So
-# github.event.workflow_run is the lockfile check's run.
+# The caller's trigger: workflow_run on "Validate Actions Lockfile" (_actions-lock.yml), completed.
+# So github.event.workflow_run is the lockfile validation's run.
 #
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #

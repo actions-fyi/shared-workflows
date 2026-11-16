@@ -4,7 +4,7 @@ $schema: https://ciatlas.github.io/flowpact/schemas/contract/v1.json
 version: 1
 kind: workflow
 path: .github/workflows/actionslint.yml
-name: Lint GitHub Actions
+name: Lint
 triggers:
   - merge_group
   - pull_request
