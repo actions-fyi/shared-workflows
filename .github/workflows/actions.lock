@@ -101,6 +101,8 @@ workflows:
     '.github/workflows/test.yml':
         - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/typescript.yml': []
+    '.github/workflows/workflow-sync-dispatch.yml': []
+    '.github/workflows/workflow-sync.yml': []
     '.github/workflows/zizmor.yml': []
 dependencies:
     'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9':
