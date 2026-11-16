@@ -1,0 +1,32 @@
+name: Validate
+# This repository's caller of its own shared workflow _cloudflare.yml, which holds the check; see
+# there. It calls the sibling with `$/`, so a pull request runs its own version of it. Other
+# repositories get their caller from the workflow template cloudflare.yml of actions-fyi/.github.
+#
+# This repository has no Worker of its own, so the two calls test the workflow's two paths:
+# - No Worker checks the repository's root, which has no Wrangler config: the check is skipped and
+#   the call passes.
+# - Fixture checks .github/fixtures/cloudflare, a minimal Worker with Wrangler locked in its
+#   package-lock.json: it is installed with npm ci, and its deployment is dry-run.
+on:
+  pull_request:
+  merge_group:
+
+permissions: {}
+
+jobs:
+  no-worker:
+    name: No Worker
+    # What the jobs of _cloudflare.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read the Wrangler config and the lockfile, and check the Worker out
+    uses: $/.github/workflows/_cloudflare.yml
+
+  fixture:
+    name: Fixture
+    # What the jobs of _cloudflare.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read the Wrangler config and the lockfile, and check the Worker out
+    uses: $/.github/workflows/_cloudflare.yml
+    with:
+      working-directory: .github/fixtures/cloudflare

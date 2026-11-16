@@ -1,0 +1,9 @@
+{
+  "name": "cloudflare-check-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A minimal Worker that cloudflare.yml checks with _cloudflare.yml.",
+  "devDependencies": {
+    "wrangler": "4.162.0"
+  }
+}

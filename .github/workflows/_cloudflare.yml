@@ -1,0 +1,199 @@
+name: Validate
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the check of a Cloudflare Worker: that its Wrangler
+# configuration is valid and that it bundles, without deploying it and without Cloudflare
+# credentials. Workflows in other repositories call it by full path and tag; the workflow template
+# cloudflare.yml of actions-fyi/.github is the caller that repositories hosting a Worker add. This
+# repository's own cloudflare.yml calls it with `$/`. It runs as part of the caller's run, in the
+# calling repository's context: the caller's event and token.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# Callers run it on pull_request and merge_group, where it is the gate: a merge queue waits for
+# every required check, so it must also run on merge_group, where it checks the merged result. A
+# caller may also run it on pushes to the default branch. There it gates nothing: it reports a
+# default branch that broke without a pull request.
+#
+# The worker job decides whether there is a Worker to check: a wrangler.json, wrangler.jsonc or
+# wrangler.toml in the working directory. If not, the check job is skipped, and the run still
+# succeeds, because the worker job does. Callers shouldn't filter by paths, because nearly any file
+# can break a bundle.
+#
+# The check job installs the locked dependencies with npm ci and runs wrangler deploy --dry-run.
+# That runs the [build] command of the Wrangler config, bundles the Worker, reads the assets
+# directory, prints the bindings and the upload size, and exits without contacting Cloudflare. So
+# it fails on a config that doesn't parse, a missing entry point, and a Worker that doesn't bundle.
+# It doesn't check that the KV namespaces, queues or account IDs the config names exist: that needs
+# a Cloudflare token, which this workflow must never hold.
+#
+# Limits of this version:
+# - npm only. The working directory must hold a package.json and a package-lock.json; a Worker
+#   that uses another package manager fails with an error that says so.
+# - Wrangler must be a locked dependency of that package, in devDependencies. It is never installed
+#   ad hoc: an unpinned Wrangler would run with whatever the job holds, and its version would
+#   change between runs.
+# - Only the Wrangler config in the working directory is checked, with its default environment.
+#
+# The check job runs the repository's code: install scripts of its dependencies, and the build
+# command, all of which a pull request, a Renovate update among them, can change. So it holds a
+# read-only token, takes no secrets, checks out without persisting credentials, and restores and
+# saves no cache. It is never given CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   contents: read  # worker: read the Wrangler config, package.json and the lockfile; check: check
+#                   # the Worker out
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: >-
+          The directory of the Worker to check, relative to the repository's root. It must hold the
+          Wrangler config, package.json and package-lock.json.
+        type: string
+        required: false
+        default: .
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  worker:
+    name: Find Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # Read the Wrangler config, package.json and the lockfile
+    outputs:
+      check: ${{ steps.worker.outputs.check }}
+      node-version: ${{ steps.worker.outputs.node-version }}
+      node-version-file: ${{ steps.worker.outputs.node-version-file }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Only reads files; nothing from the repository runs here. The outputs are fixed words and
+      # paths built from the caller's working-directory, never text from the repository's files.
+      - name: Find Worker
+        id: worker
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [[ -d "$WORKING_DIRECTORY" ]] \
+            || fail "The working directory $WORKING_DIRECTORY doesn't exist."
+          cd "$WORKING_DIRECTORY"
+          where="$WORKING_DIRECTORY"
+          [[ "${where%/}" == "." ]] && where="the repository's root"
+          config=""
+          for file in wrangler.json wrangler.jsonc wrangler.toml; do
+            if [[ -f "$file" ]]; then
+              config="$file"
+              break
+            fi
+          done
+          if [[ -z "$config" ]]; then
+            echo "::notice::No wrangler.json, wrangler.jsonc or wrangler.toml in $where. Nothing to check."
+            echo "check=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          [[ -f package.json ]] \
+            || fail "There's a $config in $where, but no package.json next to it. Add one that lists wrangler in devDependencies, and commit its package-lock.json."
+          jq -e 'type == "object"' package.json > /dev/null \
+            || fail "package.json isn't a JSON object."
+          [[ -f package-lock.json ]] \
+            || fail "There's no package-lock.json in $where. This check supports only npm, and installs only from its lockfile. Commit package-lock.json."
+          # packages is the lockfile format of npm 7 and later, dependencies the one before.
+          jq -e '(.packages["node_modules/wrangler"] // .dependencies.wrangler) | type == "object"' \
+            package-lock.json > /dev/null \
+            || fail "wrangler isn't a locked dependency of the package in $where. Add wrangler to devDependencies in package.json and commit the updated package-lock.json. This check doesn't install Wrangler on its own."
+
+          # setup-node reads a version file relative to the repository's root.
+          prefix="${WORKING_DIRECTORY%/}/"
+          [[ "$prefix" == "./" ]] && prefix=""
+          node_version=""
+          node_version_file=""
+          if [[ -f .nvmrc ]]; then
+            node_version_file="${prefix}.nvmrc"
+          elif [[ -f .node-version ]]; then
+            node_version_file="${prefix}.node-version"
+          elif jq -e '(.engines.node // .volta.node // "") | tostring | length > 0' package.json > /dev/null; then
+            node_version_file="${prefix}package.json"
+          else
+            node_version="lts/*"
+          fi
+
+          {
+            echo "check=true"
+            echo "node-version=$node_version"
+            echo "node-version-file=$node_version_file"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Checking the Worker in $where, configured by $config."
+
+  check:
+    name: Worker
+    needs: worker
+    if: needs.worker.outputs.check == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # github.ref is refs/pull/<number>/merge for a pull request, a unique
+    # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, and the
+    # branch for a push. So only a pull request's own earlier run is cancelled, and a push never
+    # cancels a run that has started.
+    concurrency:
+      group: cloudflare-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read # Check the Worker out
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # No cache; see the top. setup-node would otherwise cache npm's when packageManager names it.
+      - name: Set Up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ needs.worker.outputs.node-version }}
+          node-version-file: ${{ needs.worker.outputs.node-version-file }}
+          package-manager-cache: false
+      - name: Install Dependencies
+        run: npm ci
+      # --no-install makes npx run only the Wrangler that npm ci installed from the lockfile, and
+      # fail when there is none. No Cloudflare credentials are set, and none are needed: a dry run
+      # doesn't contact Cloudflare. The bundle is written outside the checkout and thrown away.
+      - name: Dry-Run the Deployment
+        env:
+          WRANGLER_SEND_METRICS: "false" # No usage metrics to Cloudflare
+          FORCE_COLOR: "0" # Plain output, so the upload size can be read from it
+        run: |
+          log="$RUNNER_TEMP/wrangler-dry-run.log"
+          npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-dry-run" 2>&1 \
+            | tee "$log"
+          # Only a line of this exact shape reaches the summary, never other output of the build.
+          size="$(grep -m 1 -oE 'Total Upload: [0-9.]+ [A-Za-z]+ / gzip: [0-9.]+ [A-Za-z]+' "$log" || true)"
+          {
+            echo "### Cloudflare Worker"
+            echo
+            echo "The dry run bundled the Worker. Nothing was deployed.${size:+ $size.}"
+          } >> "$GITHUB_STEP_SUMMARY"
