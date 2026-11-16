@@ -1,0 +1,24 @@
+name: Sync
+# Tells the org's repositories to sync now: on a push to main that changes a workflow or a
+# workflow template here, it sends them the workflow-sync event, which workflow-sync.yml in each
+# of them listens for. Without it a change would wait for their daily run. This caller lives only
+# in actions-fyi/.github, the source of the sync. The jobs live in _workflow-sync-dispatch.yml of
+# actions-fyi/sync-workflows; see there.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/*.yml
+      - .github/workflows/*.yaml
+      - workflow-templates/*.yml
+      - workflow-templates/*.yaml
+
+permissions: {}
+
+jobs:
+  dispatch:
+    name: Dispatch
+    # What the dispatch job of _workflow-sync-dispatch.yml declares; a called job can't get more.
+    permissions:
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync-dispatch.yml@v0.1.0

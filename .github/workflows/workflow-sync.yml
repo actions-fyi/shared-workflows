@@ -1,0 +1,30 @@
+name: Sync
+# Keeps this repository's copies of the workflows and workflow templates of actions-fyi/.github
+# up to date: when a copy differs, it opens a pull request here, or updates the one that is open.
+# It runs in every repository that has it: daily, on demand, and when actions-fyi/.github sends
+# the workflow-sync event after a push to its default branch. It does nothing in actions-fyi/.github
+# itself. The jobs live in _workflow-sync.yml of actions-fyi/sync-workflows; see there.
+on:
+  schedule:
+    - cron: "43 3 * * *"
+  repository_dispatch:
+    types: [workflow-sync]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report which copies differ without opening a pull request.
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  workflows:
+    name: Workflows
+    # What the workflows job of _workflow-sync.yml declares; a called job can't get more.
+    permissions:
+      contents: read # Declared by the workflows job
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync.yml@v0.1.0
+    with:
+      dry-run: ${{ inputs.dry-run || false }} # Empty on schedule and repository_dispatch
