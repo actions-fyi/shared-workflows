@@ -114,11 +114,15 @@ jobs:
   # requests from a branch of this repository: a fork's pull request gets no OIDC token, so it
   # keeps the failed check and the upstream job's annotation on the file.
   #
-  # Nothing is checked out. The job reads each config at the pull request's head through the API,
-  # adds only the missing lines, and commits the files with createCommitOnBranch, which GitHub
-  # signs, and which only lands if the branch didn't move since the head it read. The commit can't
-  # use the workflow's own token, because GitHub starts no workflows for its pushes, so the new
-  # head would wait for its required checks forever. It uses a short-lived token from Octo STS
+  # Nothing is checked out. The job reads each config at the branch's head through the API, adds
+  # only the missing lines, and commits the files with createCommitOnBranch, which GitHub signs,
+  # and which only lands if the branch didn't move since the head it read. That is the head when
+  # the job gets its turn in the group below, not the commit the upstream job ran on: another fix
+  # job may have committed since, so it finds out again there what each config misses.
+  #
+  # The commit can't use the workflow's own token, because GitHub starts no workflows for its
+  # pushes, so the new head would wait for its required checks forever. It uses a short-lived token
+  # from Octo STS
   # instead, granted by renovate-upstream.sts.yaml in .github/chainguard/ of actions-fyi/.github,
   # which accepts released versions of this file, at refs/tags/v..., so callers call it by tag.
   # This repository's own caller runs a pull request's copy and gets no token; its configs extend
@@ -135,6 +139,12 @@ jobs:
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # One group for every job that commits to a pull request's branch, in any workflow, so only one
+    # of them runs at a time per pull request. queue: max lets the others wait their turn instead
+    # of replacing each other; it can't be combined with cancel-in-progress.
+    concurrency:
+      group: pr-write-${{ github.event.pull_request.number }}
+      queue: max
     permissions:
       contents: read # Read the Renovate configs and the head commit
       id-token: write # Exchange the job's OIDC token with Octo STS
@@ -154,16 +164,12 @@ jobs:
         uses: actions/github-script@v9.0.0
         env:
           MISSING: ${{ needs.upstream.outputs.missing }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
         with:
           script: |
             const missing = JSON.parse(process.env.MISSING);
-            const { SCHEMA_URL: url, UPSTREAM: upstream, HEAD_SHA: ref, FIX_TRAILER: trailer } = process.env;
-            const { data: head } = await github.rest.repos.getCommit({ ...context.repo, ref });
-            if (head.commit.message.split('\n').includes(trailer)) {
-              core.setFailed('The head commit is already a fix, but the configs still miss the upstream. Nothing was committed, to avoid a loop.');
-              return;
-            }
+            const { SCHEMA_URL: url, UPSTREAM: upstream, HEAD_REF: branch, FIX_TRAILER: trailer } = process.env;
+            const { data: { object: { sha: ref } } } = await github.rest.git.getRef({ ...context.repo, ref: `heads/${branch}` });
             const canonical = (v) => Array.isArray(v) ? v.map(canonical)
               : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]))
               : v;
@@ -177,11 +183,28 @@ jobs:
               return text.slice(0, index) + (closing ? entry : `${entry}, `) + rest;
             };
             const additions = [];
-            for (const { file, missing: keys } of missing) {
-              const { data } = await github.rest.repos.getContent({ ...context.repo, path: file, ref });
+            for (const { file } of missing) {
+              let data;
+              try {
+                ({ data } = await github.rest.repos.getContent({ ...context.repo, path: file, ref }));
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                core.info(`${file}: no longer on the branch`);
+                continue;
+              }
               // jq reads past a byte order mark, JSON.parse doesn't; the fix drops it.
               const original = Buffer.from(data.content, 'base64').toString('utf8').replace(/^\uFEFF/, '');
               const config = JSON.parse(original);
+              // What the file misses at this head, by the upstream job's rules.
+              const extended = file === 'default.json' || (config.extends ?? []).some((preset) => {
+                const name = String(preset).replace(/^local>/, 'github>');
+                return name === upstream || name.startsWith(`${upstream}#`);
+              });
+              const keys = [...(config.$schema === url ? [] : ['$schema']), ...(extended ? [] : ['extends'])];
+              if (keys.length === 0) {
+                core.info(`${file}: misses nothing anymore`);
+                continue;
+              }
               const wanted = { ...config };
               if (keys.includes('$schema')) wanted.$schema = url;
               if (keys.includes('extends')) wanted.extends = [upstream, ...(config.extends ?? [])];
@@ -208,7 +231,19 @@ jobs:
               core.info(`${file}: adds ${keys.join(' and ')}`);
               additions.push({ path: file, contents: Buffer.from(text).toString('base64') });
             }
+            if (additions.length === 0) {
+              core.notice(`The configs miss nothing at ${ref}, the branch's head now, so there is nothing to commit.`);
+              return;
+            }
+            // Only now: a head that is another run's fix, and that misses nothing, is what a job
+            // that waited its turn should find.
+            const { data: head } = await github.rest.repos.getCommit({ ...context.repo, ref });
+            if (head.commit.message.split('\n').includes(trailer)) {
+              core.setFailed('The head commit is already a fix, but the configs still miss the upstream. Nothing was committed, to avoid a loop.');
+              return;
+            }
             core.setOutput('additions', JSON.stringify(additions));
+            core.setOutput('head', ref);
       # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
       # pull request can't add or weaken them. The token is revoked when the job ends.
       - name: Get Fix Token
@@ -230,7 +265,7 @@ jobs:
         env:
           ADDITIONS: ${{ steps.fix.outputs.additions }}
           HEAD_REF: ${{ github.head_ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.fix.outputs.head }}
         with:
           github-token: ${{ steps.sts.outputs.token }}
           script: |

@@ -242,8 +242,9 @@ jobs:
     # get no OIDC token, the merge queue has no branch to fix, and Dependabot updates the lockfile
     # itself.
     #
-    # No concurrency group: the commit only lands if the branch didn't move, and a group shared
-    # with the check job would let the run that the fix commit starts cancel this job's cleanup.
+    # By the time this job gets its turn in the group below, another fix job may have committed to
+    # the branch. So it works on the branch's head as it is then, not on the commit the check ran
+    # on, and finds out again there whether anything needs fixing.
     if: >-
       !cancelled()
       && (
@@ -254,6 +255,12 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # One group for every job that commits to a pull request's branch, in any workflow, so only one
+    # of them runs at a time per pull request. queue: max lets the others wait their turn instead
+    # of replacing each other; it can't be combined with cancel-in-progress.
+    concurrency:
+      group: pr-write-${{ github.event.pull_request.number }}
+      queue: max
     permissions:
       contents: read # Read the workflows
       id-token: write # Exchange the job's OIDC token with Octo STS
@@ -267,12 +274,26 @@ jobs:
         uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
-      # The pull request's head, because the fix is committed on top of it.
+      # The branch's head now, because the fix is committed on top of it. It differs from the
+      # commit the check ran on when something was pushed, or another fix job committed, since.
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.head_ref }}
           persist-credentials: false
+      # moved: the check's result is about another commit, so a fix that finds nothing to do here,
+      # or can't run, doesn't fail this job. The new head gets its own run.
+      - name: Find Head
+        id: head
+        env:
+          CHECKED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [[ "$sha" != "$CHECKED_SHA" ]]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::The branch moved from $CHECKED_SHA, which the check ran on, to $sha. The fix is tried on $sha."
+          fi
       - name: Install gh-actions-lock
         env:
           GH_TOKEN: ${{ github.token }}
@@ -284,9 +305,12 @@ jobs:
         id: regenerate
         env:
           GH_TOKEN: ${{ github.token }}
+          MOVED: ${{ steps.head.outputs.moved }}
         run: |
           if gh actions-lock; then
             echo "done=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$MOVED" == true ]]; then
+            echo "::warning::gh actions-lock couldn't fix the branch's new head; see the output above. Nothing was committed, and the new head's own run reports it."
           elif [[ "$CHECK_RESULT" == success ]]; then
             echo "::warning::gh actions-lock couldn't fix the warnings of the check job; see the output above. Nothing was committed."
           else
@@ -295,10 +319,16 @@ jobs:
       - name: Collect Fix
         id: fix
         if: steps.regenerate.outputs.done == 'true'
+        env:
+          MOVED: ${{ steps.head.outputs.moved }}
         run: |
           git add --all
           mapfile -d '' changed < <(git diff --cached --no-renames --name-only -z)
           if (( ${#changed[@]} == 0 )); then
+            if [[ "$MOVED" == true ]]; then
+              echo "::notice::gh actions-lock changes nothing on the branch's new head, so the lockfile was already fixed there and there is nothing to commit."
+              exit 0
+            fi
             if [[ "$CHECK_RESULT" == success ]]; then
               echo "::notice::gh actions-lock changed nothing, so there is nothing to commit. Any warnings the check job annotated are ones it doesn't fix."
               exit 0
@@ -341,14 +371,14 @@ jobs:
           echo "::error::Octo STS granted no token to commit the fix. Run gh actions-lock and push the result."
           exit 1
       # Committed through the API rather than pushed, so GitHub signs the commit, and the branch
-      # only moves if nothing was pushed to it since this run started. Renovate must list the
-      # commit's author, octo-sts[bot], in gitIgnoredAuthors, or it stops updating the branch.
+      # only moves if nothing was pushed to it since this job checked it out. Renovate must list
+      # the commit's author, octo-sts[bot], in gitIgnoredAuthors, or it stops updating the branch.
       - name: Commit Fix
         if: steps.fix.outputs.changed == 'true' && steps.sts.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.sts.outputs.token }}
           HEAD_REF: ${{ github.head_ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
         run: |
           additions="$RUNNER_TEMP/additions.json"
           deletions="$RUNNER_TEMP/deletions.json"
@@ -383,7 +413,7 @@ jobs:
               }}
             }' > "$request"
           if ! oid=$(gh api graphql --input "$request" --jq '.data.createCommitOnBranch.commit.oid'); then
-            echo "::error::Couldn't commit the lockfile fix. If the branch moved since this run started, the new push gets its own run."
+            echo "::error::Couldn't commit the lockfile fix. If the branch moved since this job checked it out, the new push gets its own run."
             exit 1
           fi
           echo "::notice::Committed the lockfile fix as $oid. Its own run checks the result."
