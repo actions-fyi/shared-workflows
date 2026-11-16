@@ -1,4 +1,4 @@
-name: Check Workflow Data Flow
+name: Audit
 # This repository's caller of its own shared workflow _flowpact.yml, which holds the check; see
 # there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
 # ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups

@@ -2,7 +2,7 @@ name: PR Metadata
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags. It is called by a workflow_run listener in consumer
 # repositories, by full path and tag, so inside it github.event is the workflow_run payload, and the
-# token and secrets are the base repository's. The listener follows the org ruleset's Check Metadata
+# token and secrets are the base repository's. The listener follows the org ruleset's Lint Metadata
 # runs, which start on every push to a pull request. Only a run's first attempt counts: the rerun
 # job below re-runs that check after fixing the title, and its second attempt must not start this
 # workflow again.
@@ -12,7 +12,7 @@ name: PR Metadata
 # For the pull request whose run started the listener, Claude Haiku:
 # - labels it, if it has no labels yet;
 # - rewrites its title, if it isn't a Conventional Commits title, and re-runs the failed jobs of the
-#   pull request's Check Metadata runs, so that check sees the new title;
+#   pull request's Lint Metadata runs, so that check sees the new title;
 # - writes its description, if it is empty. Later pushes rewrite it, until someone edits it; from
 #   then on it is theirs.
 #
@@ -34,7 +34,7 @@ name: PR Metadata
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   actions: write        # rerun: re-run the failed Check Metadata jobs
+#   actions: write        # rerun: re-run the failed Lint Metadata jobs
 #   contents: read        # screen jobs: check out the default branch
 #   id-token: write       # guard: log in to OpenBao
 #   issues: write         # guard: escalate a flag; classify: read the labels; apply-labels: label
@@ -516,18 +516,18 @@ jobs:
   # The token's title edit starts no new run of the check, so its failed runs are re-run. A
   # repository may have no such check, so finding none to re-run is fine.
   rerun:
-    name: Re-run Check Metadata
+    name: Re-run Lint Metadata
     needs: [resolve, apply-title]
     if: needs.apply-title.outputs.applied == 'true'
     runs-on: ubuntu-latest
     permissions:
-      actions: write # Re-run the failed jobs of the Check Metadata runs
+      actions: write # Re-run the failed jobs of the Lint Metadata runs
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.22.4
         with:
           egress-policy: audit
-      - name: Re-run Check Metadata
+      - name: Re-run Lint Metadata
         uses: actions/github-script@v9.0.0
         env:
           HEAD_SHA: ${{ needs.resolve.outputs.head-sha }}
@@ -544,9 +544,11 @@ jobs:
               core.warning(`Couldn't list the workflow runs for ${head_sha}: ${error.message}`);
               return;
             }
-            const failed = runs.filter((r) => r.name === 'Check Metadata' && r.conclusion === 'failure');
+            // Check Metadata is the old name, which a caller that isn't renamed yet still runs under.
+            const names = ['Lint Metadata', 'Check Metadata'];
+            const failed = runs.filter((r) => names.includes(r.name) && r.conclusion === 'failure');
             if (failed.length === 0) {
-              core.notice(`No failed Check Metadata run for ${head_sha}, so nothing is re-run.`);
+              core.notice(`No failed Lint Metadata run for ${head_sha}, so nothing is re-run.`);
               return;
             }
             for (const r of failed) {

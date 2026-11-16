@@ -1,9 +1,12 @@
 name: PR Metadata
-# Check Metadata is the org ruleset workflow that checks the title. Its runs on pull requests start
-# this listener, which runs with the secrets and a write token, for fork pull requests too.
+# Lint Metadata is the org ruleset workflow that checks the title. Its runs on pull requests start
+# this listener, which runs with the secrets and a write token, for fork pull requests too. A
+# workflow_run trigger matches workflows by name, not by file, so that workflow keeps a full name
+# of its own instead of the bare Lint. "Check Metadata" is its old name, which branches cut before
+# the rename still run under; remove it once those are gone.
 on:
   workflow_run:
-    workflows: ["Check Metadata"]
+    workflows: ["Lint Metadata", "Check Metadata"]
     types: [completed]
 
 permissions: {}
@@ -13,7 +16,7 @@ jobs:
     name: Metadata
     cache-mode: none
     permissions:
-      actions: write # Re-run the failed Check Metadata jobs
+      actions: write # Re-run the failed Lint Metadata jobs
       contents: read # Check out the default branch for the screen jobs
       id-token: write # Log in to OpenBao for Prompt Guard
       issues: write # Read the repository's labels, label the pull request, and escalate a flag

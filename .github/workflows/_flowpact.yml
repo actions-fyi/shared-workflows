@@ -1,4 +1,4 @@
-name: Check Workflow Data Flow
+name: Audit
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags, and holds the flowpact check. Workflows in other repositories,
 # ruleset workflows included, call it by full path and tag: in a ruleset workflow, GitHub resolves
@@ -134,7 +134,7 @@ jobs:
       # pull request can change. The token is the workflow's own, which reads public repositories.
       # Drifted contracts are uploaded as an artifact too, with a patch, for a pull request the
       # update job can't commit to, such as a fork's.
-      - name: Check Workflow Data Flow
+      - name: Audit Workflow Data Flow
         id: flowpact
         uses: ciatlas/flowpact@v0.29.2
         with:

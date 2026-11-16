@@ -1,4 +1,4 @@
-name: Check Actions Lockfile
+name: Validate Actions Lockfile
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
 # releases it under immutable tags, and holds the logic that used to be the ruleset workflow
 # actions-lock.yml of actions-fyi/ruleset-workflows. Callers stay thin:
