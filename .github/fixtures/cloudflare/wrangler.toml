@@ -1,0 +1,4 @@
+# A minimal Worker for cloudflare.yml. It is only ever dry-run, never deployed.
+name = "cloudflare-check-fixture"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
