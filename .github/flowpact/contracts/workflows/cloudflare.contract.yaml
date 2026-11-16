@@ -16,6 +16,6 @@ calls:
     uses: .github/workflows/_cloudflare.yml
     with:
       working-directory: .github/fixtures/cloudflare
-  - job: no-worker
+  - job: no-config
     uses: .github/workflows/_cloudflare.yml
 consumers: []
