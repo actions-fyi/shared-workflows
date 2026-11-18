@@ -217,11 +217,11 @@ jobs:
   # Screens the free text of the snapshot. A flag or an error leaves the pull request as it is.
   guard:
     name: Guard
-    needs: collect
+    needs: [resolve, collect]
     permissions:
       id-token: write # Log in to OpenBao
-      issues: write # Escalate a flag; a workflow_run event carries no pull request, so as an issue
-      pull-requests: write # Declared by the shared workflow
+      issues: write # Comment on the pull request, or open the escalation issue
+      pull-requests: write # Label the flagged pull request and convert it to a draft
     uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.3.0
     secrets:
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
@@ -229,6 +229,7 @@ jobs:
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
     with:
       artifact: pr-metadata-pull-request
+      pull-request: ${{ needs.resolve.outputs.number }}
       files: |
         title=title.txt
         body=body.txt
