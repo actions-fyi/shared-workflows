@@ -19,6 +19,9 @@ name: Explain Actions Lockfile
 # - When the fix job committed a fix, the fix commit's own run checks the result and reports or
 #   resolves, so this run does nothing. Merge groups and other events are neither.
 # The hidden marker finds the comment and the issue; only what github-actions[bot] created counts.
+# Only an open issue is commented on or closed: after a fix closed it, a new failure opens a new one.
+# report and resolve-report share the issues-and-pull-requests group with every other job that opens
+# or closes issues and pull requests, so none of them act at the same time.
 #
 # Under pull_request, fork pull requests get no secrets and a read-only token, so this can't run
 # there. Under workflow_run it gets both, for fork pull requests too, which makes the run's logs
@@ -330,10 +333,12 @@ jobs:
     needs: [resolve, fetch, explain, screen]
     if: always() && !cancelled() && needs.resolve.outputs.mode == 'report'
     runs-on: ubuntu-latest
-    # Queued, not cancelled, and shared with resolve-report: two quick runs never both create a
-    # comment or an issue.
+    # One group for every job that opens, comments on or closes an issue or a pull request, in any
+    # workflow, resolve-report included: two quick runs never both create a comment or an issue.
+    # queue: max lets the others wait their turn instead of replacing each other.
     concurrency:
-      group: explain-actions-lock-report-${{ needs.resolve.outputs.key }}
+      group: issues-and-pull-requests
+      queue: max
     permissions:
       issues: write # Open the issue, or comment on the open one
       pull-requests: write # Create, update and unminimize the comment
@@ -416,7 +421,8 @@ jobs:
     if: needs.resolve.outputs.mode == 'resolve'
     runs-on: ubuntu-latest
     concurrency:
-      group: explain-actions-lock-report-${{ needs.resolve.outputs.key }}
+      group: issues-and-pull-requests
+      queue: max
     permissions:
       issues: write # Comment on and close the open issue
       pull-requests: write # Minimize the comment
