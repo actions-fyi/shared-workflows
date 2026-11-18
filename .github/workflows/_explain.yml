@@ -19,6 +19,11 @@ name: Explain Actions Lockfile
 # - When the fix job committed a fix, the fix commit's own run checks the result and reports or
 #   resolves, so this run does nothing. Merge groups and other events are neither.
 # The hidden marker finds the comment and the issue; only what github-actions[bot] created counts.
+# Only an open issue is commented on or closed: after a fix closed it, a new failure opens a new one.
+# On the default branch, a run whose commit is no longer the branch's head does nothing: the newer
+# push's own run reports or resolves. report and resolve-report share the issues-and-pull-requests
+# group with every other job that opens or closes issues and pull requests, so none of them act at
+# the same time.
 #
 # Under pull_request, fork pull requests get no secrets and a read-only token, so this can't run
 # there. Under workflow_run it gets both, for fork pull requests too, which makes the run's logs
@@ -33,7 +38,8 @@ name: Explain Actions Lockfile
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
 #   actions: read         # resolve: read the run's jobs; fetch: download their logs
-#   contents: read        # screen: check out the default branch
+#   contents: read        # screen: check out the default branch; report, resolve-report: read
+#                         # the default branch's head
 #   issues: write         # report, resolve-report: open, comment on and close the issue
 #   pull-requests: write  # resolve: find the pull request; report, resolve-report: the comment
 # and pass the CLAUDE_CODE_OAUTH_TOKEN secret.
@@ -330,11 +336,14 @@ jobs:
     needs: [resolve, fetch, explain, screen]
     if: always() && !cancelled() && needs.resolve.outputs.mode == 'report'
     runs-on: ubuntu-latest
-    # Queued, not cancelled, and shared with resolve-report: two quick runs never both create a
-    # comment or an issue.
+    # One group for every job that opens, comments on or closes an issue or a pull request, in any
+    # workflow, resolve-report included: two quick runs never both create a comment or an issue.
+    # queue: max lets the others wait their turn instead of replacing each other.
     concurrency:
-      group: explain-actions-lock-report-${{ needs.resolve.outputs.key }}
+      group: issues-and-pull-requests
+      queue: max
     permissions:
+      contents: read # Read the default branch's head
       issues: write # Open the issue, or comment on the open one
       pull-requests: write # Create, update and unminimize the comment
     steps:
@@ -395,6 +404,16 @@ jobs:
               return;
             }
 
+            // A newer push to the default branch has its own run, which reports or resolves, so a
+            // slow run can't reopen what a newer one resolved, or close what it reported.
+            const { data: head } = await github.rest.git.getRef({
+              owner, repo, ref: `heads/${run.head_branch}`,
+            });
+            if (head.object.sha !== run.head_sha) {
+              core.notice(`${run.head_branch} moved on from ${run.head_sha.slice(0, 7)}, so the newer push's run reports.`);
+              return;
+            }
+
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner, repo, state: 'open', creator: bot, per_page: 100,
             });
@@ -416,8 +435,10 @@ jobs:
     if: needs.resolve.outputs.mode == 'resolve'
     runs-on: ubuntu-latest
     concurrency:
-      group: explain-actions-lock-report-${{ needs.resolve.outputs.key }}
+      group: issues-and-pull-requests
+      queue: max
     permissions:
+      contents: read # Read the default branch's head
       issues: write # Comment on and close the open issue
       pull-requests: write # Minimize the comment
     steps:
@@ -460,6 +481,16 @@ jobs:
                 { id: comment.node_id },
               );
               core.notice(`Resolved the report on #${number}.`);
+              return;
+            }
+
+            // A newer push to the default branch has its own run, which reports or resolves, so a
+            // slow run can't reopen what a newer one resolved, or close what it reported.
+            const { data: head } = await github.rest.git.getRef({
+              owner, repo, ref: `heads/${run.head_branch}`,
+            });
+            if (head.object.sha !== run.head_sha) {
+              core.notice(`${run.head_branch} moved on from ${run.head_sha.slice(0, 7)}, so the newer push's run reports.`);
               return;
             }
 

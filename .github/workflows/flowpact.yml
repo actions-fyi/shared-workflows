@@ -2,7 +2,7 @@ name: Audit
 # This repository's caller of its own shared workflow _flowpact.yml, which holds the check; see
 # there. It calls the sibling with `$/`, so a pull request runs its own version of it. The org
 # ruleset doesn't run in this repository, so this caller covers its pull requests and merge groups
-# too, and pushes to main, where a failed check opens an issue.
+# too, and pushes to main, where a failed check opens an issue and a passing one closes it.
 #
 # This repository publishes its _-prefixed shared workflows under release tags, and its custom
 # property action-publishing is true. So the check also compares them with their contracts, which
@@ -28,5 +28,5 @@ jobs:
       security-events: write # Upload the SARIF report to code scanning
       actions: read # Let upload-sarif read the workflow run
       id-token: write # Get an Octo STS token to commit contracts and the remotes lockfile
-      issues: write # Report a failed check on main
+      issues: write # Report a failed check on main, and close the issue once it passes
     uses: $/.github/workflows/_flowpact.yml

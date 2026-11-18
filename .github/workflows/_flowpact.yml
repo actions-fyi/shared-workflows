@@ -66,8 +66,10 @@ name: Audit
 #   which only flowpact-lock.shared.sts.yaml (identity flowpact-lock.shared) matches. A token can't
 #   be handed from one job to another, so this job requests it itself; it checks nothing out and
 #   runs nothing from the repository.
-# - issue opens an issue, or comments on the open one, when the check fails on a push, with the
-#   workflow's own token.
+# - issue opens an issue, or comments on the open one, when the check fails on a push, and closes
+#   it when a later push passes, with the workflow's own token. It never touches a closed issue: a
+#   new failure opens a new one. It shares the issues-and-pull-requests group with every other job
+#   that opens or closes issues and pull requests, so none of them act at the same time.
 #
 # Callers run it on pull_request and merge_group, and may run it on push. A merge queue waits for
 # every required check, so it must also run on merge_group, where it lints the merged result. It
@@ -77,11 +79,12 @@ name: Audit
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
 #   contents: read         # check: check out the repository and fetch the remote interfaces;
-#                          # update: run flowpact remotes update and generate
+#                          # update: run flowpact remotes update and generate;
+#                          # issue: read the branch's head
 #   security-events: write # sarif: upload the SARIF report to code scanning
 #   actions: read          # sarif: let upload-sarif read the workflow run
 #   id-token: write        # commit: exchange the job's OIDC token with Octo STS
-#   issues: write          # issue: open or comment on the issue
+#   issues: write          # issue: open, comment on and close the issue
 on:
   workflow_call:
 
@@ -504,34 +507,58 @@ jobs:
               core.setFailed(`Couldn't commit the update: ${error.message}. If the branch moved in the meantime, the new push gets its own run.`);
             }
 
-  # Checks nothing out and runs nothing from the repository: it reports the check's failure.
+  # Checks nothing out and runs nothing from the repository: it reports the check's result on a
+  # push. A failure opens an issue, or comments on the one that is still open; a closed issue is
+  # never reopened or commented on, so a new failure after a fix opens a new one. A pass comments on
+  # and closes the open issue. A run whose commit is no longer the branch's head does nothing: the
+  # newer push's own run reports, so a slow run can't reopen what a newer one resolved.
   issue:
-    name: Report Failure
+    name: Report Result
     needs: check
-    if: ${{ !cancelled() && needs.check.result == 'failure' && github.event_name == 'push' }}
+    if: >-
+      !cancelled()
+      && contains(fromJSON('["success","failure"]'), needs.check.result)
+      && github.event_name == 'push'
     runs-on: ubuntu-latest
-    # Queued, not cancelled: two quick pushes never both open an issue.
+    # One group for every job that opens, comments on or closes an issue or a pull request, in any
+    # workflow, so they never act on the same issue at once, and never open two. queue: max lets
+    # the others wait their turn instead of replacing each other.
     concurrency:
-      group: flowpact-issue-${{ github.workflow_ref }}-${{ github.ref }}
+      group: issues-and-pull-requests
+      queue: max
     permissions:
-      issues: write # Open the issue, or comment on the open one
+      issues: write # Open, comment on and close the issue
+      contents: read # Read the branch's head
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
-      - name: Open or Update Issue
+      - name: Report or Resolve Issue
         uses: actions/github-script@v9.0.0
+        env:
+          FAILED: ${{ needs.check.result == 'failure' }}
         with:
           script: |
             const branch = context.ref.replace(/^refs\/heads\//, '');
             const title = `Workflow data flow check fails on ${branch}`;
             const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `flowpact found errors in ${context.sha.slice(0, 7)} on \`${branch}\`.`,
-              '',
-              `The run's annotations and job summary list them: ${run}`,
-            ].join('\n');
+            const sha = context.sha.slice(0, 7);
+            const failed = process.env.FAILED === 'true';
+
+            let head;
+            try {
+              ({ data: { object: { sha: head } } } = await github.rest.git.getRef({
+                ...context.repo, ref: `heads/${branch}`,
+              }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (head !== context.sha) {
+              core.notice(`${branch} moved on from ${sha}, so the newer push's run reports.`);
+              return;
+            }
+
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               ...context.repo,
               state: 'open',
@@ -539,6 +566,29 @@ jobs:
               per_page: 100,
             });
             const open = issues.find((issue) => !issue.pull_request && issue.title === title);
+
+            if (!failed) {
+              if (!open) {
+                core.info('No open issue to close.');
+                return;
+              }
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: open.number,
+                body: `The check passes again in ${sha} on \`${branch}\`: ${run}`,
+              });
+              await github.rest.issues.update({
+                ...context.repo, issue_number: open.number, state: 'closed', state_reason: 'completed',
+              });
+              core.notice(`Closed #${open.number}.`);
+              return;
+            }
+
+            const body = [
+              `flowpact found errors in ${sha} on \`${branch}\`.`,
+              '',
+              `The run's annotations and job summary list them: ${run}`,
+            ].join('\n');
             if (open) {
               await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body });
               core.notice(`Commented on #${open.number}.`);
