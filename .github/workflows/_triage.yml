@@ -44,7 +44,7 @@ jobs:
       id-token: write # Log in to OpenBao
       issues: write # Escalate a flagged issue
       pull-requests: write # Declared by the shared workflow, unused on issues
-    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.2.0
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.3.0
     secrets:
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}

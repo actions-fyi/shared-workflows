@@ -112,7 +112,7 @@ jobs:
       id-token: write # Log in to OpenBao
       issues: write # Comment on a flagged pull request
       pull-requests: write # Label a flagged pull request and convert it to a draft
-    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.2.0
+    uses: actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.3.0
     secrets:
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
