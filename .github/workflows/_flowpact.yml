@@ -119,7 +119,7 @@ jobs:
       drift: ${{ steps.report.outputs.drift }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       # The pull request's head, not its merge commit, so the check and the update see the same
@@ -202,7 +202,7 @@ jobs:
       actions: read # Let upload-sarif read the workflow run
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       - name: Download SARIF Report
@@ -258,7 +258,7 @@ jobs:
       FIX_TRAILER: "Flowpact-Updated-By: ${{ github.workflow }}"
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       # The branch's head now, because the update is committed on top of it. It differs from the
@@ -384,7 +384,7 @@ jobs:
       COMMANDS: ${{ needs.update.outputs.commands }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       - name: Download Update
@@ -517,7 +517,7 @@ jobs:
       issues: write # Open the issue, or comment on the open one
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       - name: Open or Update Issue
