@@ -106,7 +106,7 @@ defaults:
 jobs:
   check:
     name: Data Flow
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # Per caller: in a repository with two callers, its own and a ruleset's, neither cancels the
     # other.
     concurrency:
@@ -121,10 +121,6 @@ jobs:
       stale: ${{ steps.report.outputs.stale }}
       drift: ${{ steps.report.outputs.drift }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # The pull request's head, not its merge commit, so the check and the update see the same
       # files. The merge queue checks the merged result.
       - name: Checkout Repository
@@ -199,15 +195,12 @@ jobs:
           && github.event.pull_request.head.repo.full_name == github.repository
         )
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       security-events: write # Upload the SARIF report to code scanning
       actions: read # Let upload-sarif read the workflow run
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Download SARIF Report
         uses: actions/download-artifact@v8.0.2
         with:
@@ -241,7 +234,7 @@ jobs:
       )
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
     # of replacing each other; it can't be combined with cancel-in-progress.
@@ -260,10 +253,6 @@ jobs:
       # Marks the update commit, so an update that doesn't settle the files isn't committed again.
       FIX_TRAILER: "Flowpact-Updated-By: ${{ github.workflow }}"
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # The branch's head now, because the update is committed on top of it. It differs from the
       # commit the check ran on when something was pushed, or another fix job committed, since.
       - name: Checkout Repository
@@ -373,7 +362,7 @@ jobs:
     name: Commit Contracts and Remotes Lockfile
     needs: update
     if: ${{ !cancelled() && needs.update.outputs.changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
     # of replacing each other; it can't be combined with cancel-in-progress.
@@ -381,15 +370,12 @@ jobs:
       group: pr-write-${{ github.event.pull_request.number }}
       queue: max
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       id-token: write # Exchange the job's OIDC token with Octo STS
     env:
       FIX_TRAILER: "Flowpact-Updated-By: ${{ github.workflow }}"
       COMMANDS: ${{ needs.update.outputs.commands }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Download Update
         uses: actions/download-artifact@v8.0.2
         with:
@@ -445,7 +431,7 @@ jobs:
       - name: Get Commit Token
         id: sts
         continue-on-error: true
-        uses: step-security/octo-sts-action@v1.1.1
+        uses: octo-sts/action@v1.1.1
         with:
           scope: ${{ github.repository_owner }}
           identity: ${{ startsWith(github.workflow_ref, 'actions-fyi/shared-workflows/') && 'flowpact-lock.shared' || 'flowpact-lock' }}
@@ -519,7 +505,7 @@ jobs:
       !cancelled()
       && contains(fromJSON('["success","failure"]'), needs.check.result)
       && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that opens, comments on or closes an issue or a pull request, in any
     # workflow, so they never act on the same issue at once, and never open two. queue: max lets
     # the others wait their turn instead of replacing each other.
@@ -527,12 +513,9 @@ jobs:
       group: issues-and-pull-requests
       queue: max
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       issues: write # Open, comment on and close the issue
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Report or Resolve Issue
         uses: actions/github-script@v9.0.0
         env:

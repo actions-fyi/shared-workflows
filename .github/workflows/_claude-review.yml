@@ -64,15 +64,12 @@ jobs:
       && github.event.pull_request.user.type != 'Bot'
       && !startsWith(github.head_ref, 'renovate/')
       && !startsWith(github.head_ref, 'dependabot/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       issues: read # Read the pull request's comments
       pull-requests: read # Read the pull request, its commits, reviews and review comments
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # Each entry starts with a line naming its author, so Claude can tell its own earlier
       # findings from what others wrote.
       - name: Collect Thread
@@ -133,14 +130,10 @@ jobs:
     name: Guard Verdict
     needs: guard
     if: ${{ !cancelled() && needs.guard.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    permissions: {}
+    runs-on: ubuntu-24.04-firewall
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
-
       - name: Check Verdict
         env:
           RESULT: ${{ needs.guard.result }}
@@ -181,7 +174,7 @@ jobs:
           && !startsWith(github.head_ref, 'dependabot/')
         )
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # Advisory: an expired token, an unshared secret or an Anthropic outage must not block merging
     # in every repository the ruleset targets.
     continue-on-error: true
@@ -204,11 +197,6 @@ jobs:
       - name: Skip Review on Fork Pull Requests
         if: github.event_name == 'pull_request' && env.REVIEW != 'true'
         run: echo "::notice::No review on fork pull requests. They get no secrets, so Claude can't run."
-      - name: Harden the runner (Audit all outbound calls)
-        if: env.REVIEW == 'true'
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         if: env.REVIEW == 'true'
         uses: actions/checkout@v7.0.1
@@ -328,7 +316,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Review Pull Request
         if: env.REVIEW == 'true'
-        uses: step-security/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The workflow's own token instead of the Claude GitHub App's. The app token exchange

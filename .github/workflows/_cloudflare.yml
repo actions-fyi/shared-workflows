@@ -63,7 +63,7 @@ defaults:
 jobs:
   config:
     name: Find Config
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 5
     permissions:
       contents: read # Read the Wrangler config, package.json and the lockfile
@@ -72,10 +72,6 @@ jobs:
       node-version: ${{ steps.config.outputs.node-version }}
       node-version-file: ${{ steps.config.outputs.node-version-file }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
@@ -146,7 +142,7 @@ jobs:
     name: Dry Run
     needs: config
     if: needs.config.outputs.found == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 15
     # github.ref is refs/pull/<number>/merge for a pull request, a unique
     # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, and the
@@ -162,10 +158,6 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:

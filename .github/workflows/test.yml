@@ -53,17 +53,14 @@ jobs:
   screen-inputs:
     name: Prepare Screen
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions: {} # None: only writes job outputs
+    runs-on: ubuntu-24.04-firewall
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
     outputs:
       token: ${{ steps.values.outputs.token }}
       token-base64: ${{ steps.values.outputs.token-base64 }}
       credential-suffix: ${{ steps.values.outputs.credential-suffix }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Build Test Values
         id: values
         run: |
@@ -120,13 +117,10 @@ jobs:
     name: Screen Verdicts
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     needs: [screen, screen-block-token, screen-block-token-base64, screen-block-credential]
-    runs-on: ubuntu-latest
-    permissions: {} # None: only reads the results of the calls
+    runs-on: ubuntu-24.04-firewall
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Check Screen Verdicts
         env:
           CLEAN: ${{ needs.screen.result }}
