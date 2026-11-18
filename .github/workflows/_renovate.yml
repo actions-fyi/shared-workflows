@@ -40,7 +40,7 @@ jobs:
       contents: read # Read the Renovate configs
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       - name: Checkout Repository
@@ -75,7 +75,7 @@ jobs:
       missing: ${{ steps.upstream.outputs.missing }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       - name: Checkout Repository
@@ -153,7 +153,7 @@ jobs:
       FIX_TRAILER: "Renovate-Upstream-Fixed-By: ${{ github.workflow }}"
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       # Inserts the missing lines into the file's own text, so the rest keeps its formatting, and

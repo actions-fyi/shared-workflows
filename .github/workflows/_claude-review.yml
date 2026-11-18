@@ -70,7 +70,7 @@ jobs:
       pull-requests: read # Read the pull request, its commits, reviews and review comments
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       # Each entry starts with a line naming its author, so Claude can tell its own earlier
@@ -137,7 +137,7 @@ jobs:
     permissions: {}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
 
@@ -206,7 +206,7 @@ jobs:
         run: echo "::notice::No review on fork pull requests. They get no secrets, so Claude can't run."
       - name: Harden the runner (Audit all outbound calls)
         if: env.REVIEW == 'true'
-        uses: step-security/harden-runner@v2.22.4
+        uses: step-security/harden-runner@v2.23.0
         with:
           egress-policy: audit
       - name: Checkout Repository
