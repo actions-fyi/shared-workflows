@@ -2,8 +2,8 @@
 # The interfaces of the remote reusable workflows and actions this repository uses, at the commit each resolved to.
 version: 1
 remotes:
-  actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.2.0:
-    sha: d9fe1aa3d5cf57daa47f9624b8ceb6f62cc4cda8
+  actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.3.0:
+    sha: c2907d59936c2ca9a0deee0f66e136b1d7e3ea2c
     kind: workflow
     inputs:
       payload-fields:
@@ -23,7 +23,10 @@ remotes:
         default: true
       threshold:
         type: string
-        default: '0.5'
+        default: '0.9'
+      pull-request:
+        type: string
+        default: ''
       mode:
         type: string
         default: audit
