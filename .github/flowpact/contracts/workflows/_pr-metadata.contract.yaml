@@ -28,12 +28,14 @@ calls:
         title=title.txt
         body=body.txt
         commits=commits.txt
+      pull-request: ${{ needs.resolve.outputs.number }}
     secrets:
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
     needs:
       - collect
+      - resolve
   - job: screen-description
     uses: .github/workflows/_screen.yml
     with:
