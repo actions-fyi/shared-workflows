@@ -13,11 +13,11 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/download-artifact@v8.0.2'
         - 'actions/upload-artifact@v7.0.2'
-        - 'anthropics/claude-code-action@v1.0.268'
+        - 'anthropics/claude-code-action@v1.0.283'
     '.github/workflows/_claude.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
-        - 'anthropics/claude-code-action@v1.0.268'
+        - 'anthropics/claude-code-action@v1.0.283'
     '.github/workflows/_cloudflare.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-node@v7.1.0'
@@ -30,7 +30,7 @@ workflows:
         - 'octo-sts/action@v1.1.1'
     '.github/workflows/_explain.yml':
         - 'actions/github-script@v9.0.0'
-        - 'anthropics/claude-code-action@v1.0.268'
+        - 'anthropics/claude-code-action@v1.0.283'
     '.github/workflows/_flowpact.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/download-artifact@v8.0.2'
@@ -48,7 +48,7 @@ workflows:
         - 'actions/download-artifact@v8.0.2'
         - 'actions/github-script@v9.0.0'
         - 'actions/upload-artifact@v7.0.2'
-        - 'anthropics/claude-code-action@v1.0.268'
+        - 'anthropics/claude-code-action@v1.0.283'
     '.github/workflows/_renovate.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
@@ -57,10 +57,10 @@ workflows:
     '.github/workflows/_screen.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
-        - 'anthropics/claude-code-action@v1.0.268'
+        - 'anthropics/claude-code-action@v1.0.283'
     '.github/workflows/_triage.yml':
         - 'actions/checkout@v7.0.1'
-        - 'anthropics/claude-code-action@v1.0.268'
+        - 'anthropics/claude-code-action@v1.0.283'
     '.github/workflows/_typescript.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-node@v7.1.0'
@@ -126,9 +126,9 @@ dependencies:
         commit: 'sha1-2252a14e810aa9b85c2d560bd7070c802206ecf6'
         owner_id: 4038316
         repo_id: 220418983
-    'anthropics/claude-code-action@v1.0.268':
-        ref: 'v1.0.268'
-        commit: 'sha1-c0949c50a78c1ec8ce2647db36629b870e715d0c'
+    'anthropics/claude-code-action@v1.0.283':
+        ref: 'v1.0.283'
+        commit: 'sha1-f431adaf77e0fecf918431e75a2b5b45b85af002'
         owner_id: 76263028
         repo_id: 986421638
         uses:
