@@ -15,8 +15,8 @@ name: Validate Actions Lockfile
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
-#   contents: read        # changes, check, fix
-#   id-token: write       # fix: exchange the job's OIDC token with Octo STS
+#   contents: read        # changes, check, fix, commit
+#   id-token: write       # commit: exchange the job's OIDC token with Octo STS
 #
 # Events:
 # - pull_request and merge_group, from the ruleset or a caller. Rulesets ignore event filters and
@@ -51,8 +51,8 @@ name: Validate Actions Lockfile
 # with "lockfile missing pin", because the runner matches the `uses:` text. That's why the fix job
 # also runs after a passed check, in a repository with a lockfile.
 #
-# On a pull request from a branch of the same repository, the fix job runs gh actions-lock and
-# commits whatever it changes to the branch. That includes Renovate branches: Renovate updates the
+# On a pull request from a branch of the same repository, the fix job runs gh actions-lock, and the
+# commit job commits what it changes to the branch. That includes Renovate branches: Renovate updates the
 # workflows but not the lockfile. It runs after a failed check, and after a passed one in a
 # repository with a lockfile, where it fixes warnings such as a bare SHA, which it rewrites to its
 # tag. A repository without a lockfile that passed has no workflows, so it gets no fix. A failed run
@@ -65,14 +65,19 @@ name: Validate Actions Lockfile
 # The commit can't use the workflow's own token, because GitHub starts no workflows for its pushes,
 # so the new head would wait for its required checks forever, and because that token can't change
 # files under .github/workflows/. It uses a short-lived token from Octo STS instead, granted by an
-# org-level trust policy in .github/chainguard/ of actions-fyi/.github. The fix job runs in this
+# org-level trust policy in .github/chainguard/ of actions-fyi/.github. The commit job runs in this
 # file, so the token's job_workflow_ref names this file, not the caller. Callers run a released
 # version, at refs/tags/v..., which actions-lock.sts.yaml (identity actions-lock) matches. This
 # repository's own caller runs the pull request's copy of this file, at refs/pull/<n>/merge, which
 # only actions-lock.shared.sts.yaml (identity actions-lock.shared) matches. So the identity follows
 # the caller, not the repository: in this repository, a ruleset caller still runs a released
-# version. The fix job only requests the identity; the policy decides what's allowed. The policy must accept this
-# file before a caller switches to it, or the fix job gets no token.
+# version. The commit job only requests the identity; the policy decides what's allowed. The policy
+# must accept this file before a caller switches to it, or the commit job gets no token.
+#
+# The two jobs are split by trust. The fix job runs gh actions-lock, downloaded code, with a
+# read-only token, and only stages what it changes. The commit job runs none of it: it checks the
+# staged files against the commit they were made on, accepting only the lockfile and uses: lines,
+# and only then gets the Octo STS token, which can write workflow files.
 #
 # A failed check on a pull request is explained by _explain.yml, which the consumer repository's
 # workflow_run listener calls when this run completes. It reads the failed jobs' logs.
@@ -102,7 +107,7 @@ jobs:
       # group, the base is an ancestor of the head, so it lists everything the group adds; for a
       # push, it lists what the pushed commits add since the merge base of before and after. The API
       # lists at most 300 files, and a larger or unlistable change is checked rather than guessed.
-      # The paths are the ones the fix job may commit.
+      # The paths are the ones the commit job may commit.
       #
       # A push that creates the branch has no before (all zeros), so it checks everything.
       #
@@ -240,9 +245,11 @@ jobs:
     # get no OIDC token, the merge queue has no branch to fix, and Dependabot updates the lockfile
     # itself.
     #
-    # By the time this job gets its turn in the group below, another fix job may have committed to
-    # the branch. So it works on the branch's head as it is then, not on the commit the check ran
-    # on, and finds out again there whether anything needs fixing.
+    # This job runs gh actions-lock, which is downloaded code, so it gets no token that can write:
+    # it only stages the files the fix changes and uploads them. The commit job checks them and
+    # commits them with the Octo STS token, which is never issued in a job that ran gh actions-lock.
+    # A process an earlier step leaves running lives until its job ends, so the token would
+    # otherwise be readable by whatever gh actions-lock started.
     if: >-
       !cancelled()
       && (
@@ -253,20 +260,16 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-24.04-firewall
-    # One group for every job that commits to a pull request's branch, in any workflow, so only one
-    # of them runs at a time per pull request. queue: max lets the others wait their turn instead
-    # of replacing each other; it can't be combined with cancel-in-progress.
-    concurrency:
-      group: pr-write-${{ github.event.pull_request.number }}
-      queue: max
     permissions:
       contents: read # Read the workflows
-      id-token: write # Exchange the job's OIDC token with Octo STS
     env:
       # Marks the fix commit, so a fix that doesn't settle the lockfile isn't committed again.
       FIX_TRAILER: "Lockfile-Fixed-By: ${{ github.workflow }}"
       # success or failure: whether a fix run that changes nothing, or can't run, fails this job.
       CHECK_RESULT: ${{ needs.check.result }}
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+      changed: ${{ steps.fix.outputs.changed }}
     steps:
       # The branch's head now, because the fix is committed on top of it. It differs from the
       # commit the check ran on when something was pushed, or another fix job committed, since.
@@ -310,11 +313,14 @@ jobs:
           else
             exit 1
           fi
+      # Stages each changed file under files/, at its path, and lists the changes in changes.json.
+      # The commit job checks them again: nothing here is trusted, because gh actions-lock ran here.
       - name: Collect Fix
         id: fix
         if: steps.regenerate.outputs.done == 'true'
         env:
           MOVED: ${{ steps.head.outputs.moved }}
+          STAGING: ${{ runner.temp }}/actions-lock-fix
         run: |
           git add --all
           mapfile -d '' changed < <(git diff --cached --no-renames --name-only -z)
@@ -331,20 +337,120 @@ jobs:
             exit 1
           fi
           git diff --cached
-          for path in "${changed[@]}"; do
-            case "$path" in
-              .github/workflows/* | action.yml | action.yaml | */action.yml | */action.yaml) ;;
-              *)
-                echo "::error::gh actions-lock changed $path, which isn't a workflow or action file. Nothing was committed."
-                exit 1
-                ;;
-            esac
-          done
           if grep -qxF "$FIX_TRAILER" <<< "$(git log -1 --format=%B)"; then
             echo "::error::The head commit is already a lockfile fix, but gh actions-lock still changes files. Nothing was committed, to avoid a loop."
             exit 1
           fi
+          mapfile -d '' additions < <(git diff --cached --no-renames --name-only -z --diff-filter=d)
+          mapfile -d '' deletions < <(git diff --cached --no-renames --name-only -z --diff-filter=D)
+          mkdir -p "$STAGING/files"
+          for path in "${additions[@]}"; do
+            mkdir -p "$STAGING/files/$(dirname -- "$path")"
+            cp -- "$path" "$STAGING/files/$path"
+          done
+          jq -n \
+            --argjson additions "$(jq -n '$ARGS.positional' --args "${additions[@]}")" \
+            --argjson deletions "$(jq -n '$ARGS.positional' --args "${deletions[@]}")" \
+            '{additions: $additions, deletions: $deletions}' > "$STAGING/changes.json"
           echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Save Fix
+        if: steps.fix.outputs.changed == 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: actions-lock-fix
+          path: ${{ runner.temp }}/actions-lock-fix
+          retention-days: 1
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+
+  commit:
+    name: Commit Actions Lockfile Fix
+    needs: fix
+    if: needs.fix.result == 'success' && needs.fix.outputs.changed == 'true'
+    runs-on: ubuntu-24.04-firewall
+    # One group for every job that commits to a pull request's branch, in any workflow, so only one
+    # of them runs at a time per pull request. queue: max lets the others wait their turn instead
+    # of replacing each other; it can't be combined with cancel-in-progress. If another one
+    # committed while this one waited, the commit below fails on expectedHeadOid, and the new head
+    # gets its own run.
+    concurrency:
+      group: pr-write-${{ github.event.pull_request.number }}
+      queue: max
+    permissions:
+      contents: read # Check out the commit the fix was made on, to compare the fix with it
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    env:
+      FIX_TRAILER: "Lockfile-Fixed-By: ${{ github.workflow }}"
+    # Only actions of GitHub and Octo STS, and shell, run here: nothing the fix job ran.
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.fix.outputs.sha }}
+          persist-credentials: false
+      - name: Download Fix
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: actions-lock-fix
+          path: ${{ runner.temp }}/actions-lock-fix
+      # Accepts only what gh actions-lock changes: the lockfile, and the uses: lines of workflow and
+      # action files, which it narrows to a full tag or rewrites from ./ to $/. Every other change
+      # to a workflow or action file, a new one, or a deletion fails here, and nothing is committed.
+      # The lockfile's pins aren't checked here; the check job of the fix commit's own run verifies
+      # them against GitHub.
+      - name: Check Fix
+        env:
+          STAGING: ${{ runner.temp }}/actions-lock-fix
+        run: |
+          set -o noglob
+          fail() { echo "::error::$1 Nothing was committed; run gh actions-lock and push the result."; exit 1; }
+          changes="$STAGING/changes.json"
+          jq -e '(.additions | type == "array") and (.deletions | type == "array")
+            and all(.additions[], .deletions[]; type == "string")' "$changes" > /dev/null \
+            || fail "The fix's changes.json doesn't list its additions and deletions."
+          [[ $(jq '.deletions | length' "$changes") == 0 ]] || fail "The fix deletes files, which gh actions-lock doesn't."
+          mapfile -t additions < <(jq -r '.additions[]' "$changes")
+          (( ${#additions[@]} > 0 )) || fail "The fix lists no changes."
+          uses='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]]'
+          for path in "${additions[@]}"; do
+            case "$path" in
+              /* | *..* | *//* | *$'\n'* | '') fail "The fix lists $path, which isn't a path in the repository." ;;
+            esac
+            staged="$STAGING/files/$path"
+            [[ -f "$staged" && ! -L "$staged" ]] || fail "The fix lists $path, but didn't stage it as a file."
+            case "$path" in
+              .github/workflows/actions.lock) continue ;;
+              .github/workflows/*.yml | .github/workflows/*.yaml | action.yml | action.yaml | */action.yml | */action.yaml) ;;
+              *) fail "The fix changes $path, which is neither the lockfile nor a workflow or action file." ;;
+            esac
+            [[ -f "$path" && ! -L "$path" ]] || fail "The fix adds $path, which gh actions-lock doesn't."
+            mapfile -t before < "$path"
+            mapfile -t after < "$staged"
+            (( ${#before[@]} == ${#after[@]} )) || fail "The fix adds or removes lines in $path, which gh actions-lock doesn't."
+            for i in "${!before[@]}"; do
+              [[ "${before[i]}" == "${after[i]}" ]] && continue
+              line="line $((i + 1)) of $path"
+              [[ "${before[i]}" =~ $uses && "${after[i]}" =~ $uses ]] || fail "The fix changes $line, which isn't a uses: line."
+              # The text before the value, and after it (a comment), stays as it is; only the
+              # value changes, in one of the two ways gh actions-lock changes it.
+              [[ "${before[i]%%uses:*}" == "${after[i]%%uses:*}" ]] || fail "The fix moves the uses: key on $line."
+              read -r old old_rest <<< "${before[i]#*uses:}"
+              read -r new new_rest <<< "${after[i]#*uses:}"
+              [[ "$old_rest" == "$new_rest" ]] || fail "The fix changes more than the action reference on $line."
+              if [[ "$old" == ./* && "$new" == "\$/${old#./}" ]]; then
+                continue # ./path to $/path: the same action in this repository, at the running commit
+              fi
+              [[ "$old" == *@* && "$new" == *@* && "${old%@*}" == "${new%@*}" ]] \
+                || fail "The fix changes the action on $line from $old to $new; gh actions-lock only changes its version."
+              # A partial version narrowed to a full one (v6 to v6.1.0), or a bare commit SHA
+              # rewritten to its tag. The lockfile pins the commit either way, and the fix commit's
+              # own check verifies the pin against the tag.
+              [[ "${new##*@}" == "${old##*@}".* || "${old##*@}" =~ ^[0-9a-f]{40}$ ]] \
+                || fail "The fix changes the action on $line from $old to $new; gh actions-lock only narrows a version or rewrites ./ to \$/."
+            done
+          done
+          echo "::notice::The fix changes ${#additions[@]} file(s), all of them the lockfile or uses: lines."
       # The org scope loads the trust policies from the default branch of actions-fyi/.github, so a
       # pull request can't add or weaken them. The token is revoked when the job ends.
       #
@@ -352,7 +458,6 @@ jobs:
       # repository's own caller runs the pull request's copy, at refs/pull/<n>/merge, and requests
       # actions-lock.shared. github.workflow_ref names the caller.
       - name: Get Fix Token
-        if: steps.fix.outputs.changed == 'true'
         id: sts
         continue-on-error: true
         uses: octo-sts/action@v1.1.1
@@ -360,34 +465,28 @@ jobs:
           scope: ${{ github.repository_owner }}
           identity: ${{ startsWith(github.workflow_ref, 'actions-fyi/shared-workflows/') && 'actions-lock.shared' || 'actions-lock' }}
       - name: Report Missing Fix Token
-        if: steps.fix.outputs.changed == 'true' && steps.sts.outcome != 'success'
+        if: steps.sts.outcome != 'success'
         run: |
           echo "::error::Octo STS granted no token to commit the fix. Run gh actions-lock and push the result."
           exit 1
       # Committed through the API rather than pushed, so GitHub signs the commit, and the branch
-      # only moves if nothing was pushed to it since this job checked it out. Renovate must list
+      # only moves if nothing was pushed to it since the fix job checked it out. Renovate must list
       # the commit's author, octo-sts[bot], in gitIgnoredAuthors, or it stops updating the branch.
       - name: Commit Fix
-        if: steps.fix.outputs.changed == 'true' && steps.sts.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.sts.outputs.token }}
           HEAD_REF: ${{ github.head_ref }}
-          HEAD_SHA: ${{ steps.head.outputs.sha }}
+          HEAD_SHA: ${{ needs.fix.outputs.sha }}
+          STAGING: ${{ runner.temp }}/actions-lock-fix
         run: |
           additions="$RUNNER_TEMP/additions.json"
-          deletions="$RUNNER_TEMP/deletions.json"
           request="$RUNNER_TEMP/request.json"
-          git diff --cached --no-renames --name-only -z --diff-filter=d \
-            | while IFS= read -r -d '' path; do
-                jq -n --arg path "$path" --rawfile contents <(base64 -w0 -- "$path") \
+          jq -r '.additions[]' "$STAGING/changes.json" \
+            | while IFS= read -r path; do
+                jq -n --arg path "$path" --rawfile contents <(base64 -w0 -- "$STAGING/files/$path") \
                   '{path: $path, contents: $contents}'
               done \
             | jq -s . > "$additions"
-          git diff --cached --no-renames --name-only -z --diff-filter=D \
-            | while IFS= read -r -d '' path; do
-                jq -n --arg path "$path" '{path: $path}'
-              done \
-            | jq -s . > "$deletions"
           jq -n \
             --arg repo "$GITHUB_REPOSITORY" \
             --arg branch "$HEAD_REF" \
@@ -396,18 +495,17 @@ jobs:
 
           $FIX_TRAILER" \
             --slurpfile additions "$additions" \
-            --slurpfile deletions "$deletions" \
             '{
               query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
               variables: {input: {
                 branch: {repositoryNameWithOwner: $repo, branchName: $branch},
                 expectedHeadOid: $head,
                 message: {headline: "ci: update the actions lockfile", body: $body},
-                fileChanges: {additions: $additions[0], deletions: $deletions[0]}
+                fileChanges: {additions: $additions[0], deletions: []}
               }}
             }' > "$request"
           if ! oid=$(gh api graphql --input "$request" --jq '.data.createCommitOnBranch.commit.oid'); then
-            echo "::error::Couldn't commit the lockfile fix. If the branch moved since this job checked it out, the new push gets its own run."
+            echo "::error::Couldn't commit the lockfile fix. If the branch moved since the fix job checked it out, the new push gets its own run."
             exit 1
           fi
           echo "::notice::Committed the lockfile fix as $oid. Its own run checks the result."
