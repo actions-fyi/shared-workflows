@@ -367,7 +367,12 @@ jobs:
   commit:
     name: Commit Actions Lockfile Fix
     needs: fix
-    if: needs.fix.result == 'success' && needs.fix.outputs.changed == 'true'
+    # !cancelled() instead of the implicit success(), which also requires every job before fix to
+    # have succeeded: the check job fails exactly when there is something to fix.
+    if: >-
+      !cancelled()
+      && needs.fix.result == 'success'
+      && needs.fix.outputs.changed == 'true'
     runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
