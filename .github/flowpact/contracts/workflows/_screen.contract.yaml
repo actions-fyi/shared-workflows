@@ -27,6 +27,12 @@ interface:
       required: true
   outputs: {}
 consumers:
+  - from: .github/workflows/_claude-review.yml
+    job: screen
+    passes:
+      - context
+      - text
+    reads: []
   - from: .github/workflows/_explain.yml
     job: screen
     passes:
