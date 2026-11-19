@@ -8,9 +8,12 @@ name: Claude
 #
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
-# Only members start Claude, but Claude reads the whole issue or pull request, which anyone may have
-# written to: a fork pull request's description, or a comment from outside. The collect job saves
-# the title, the body and every comment, review and review comment, the guard job screens them
+# Only the organization's owners and members start Claude: its author_association must be OWNER or
+# MEMBER. COLLABORATOR isn't enough, because outside collaborators are COLLABORATOR too. A member
+# whose organization membership is private may be reported as something else, and then can't start
+# Claude until they make it public. Claude still reads the whole issue or pull request, which anyone
+# may have written to: a fork pull request's description, or a comment from outside. The collect job
+# saves the title, the body and every comment, review and review comment, the guard job screens them
 # with Prompt Guard, and Claude only runs on the verdict clean. claude-code-action fetches the
 # thread itself, so a comment posted between the screen and that fetch isn't screened. Prompt Guard
 # is called by tag: its OpenBao role binds the job_workflow_ref claim to refs/tags/v*, which a
@@ -49,13 +52,13 @@ jobs:
     # additionally checks that the author has write access before Claude does anything.
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+        && contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association)) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+        && contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association)) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+        && contains(fromJSON('["OWNER","MEMBER"]'), github.event.review.author_association)) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
-        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+        && contains(fromJSON('["OWNER","MEMBER"]'), github.event.issue.author_association))
     runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # The egress firewall reads .github/egress-firewall.yaml with this token

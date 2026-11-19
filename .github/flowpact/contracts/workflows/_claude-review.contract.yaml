@@ -37,6 +37,21 @@ calls:
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
     needs:
       - collect
+  - job: screen
+    uses: .github/workflows/_screen.yml
+    with:
+      context: |
+        A code review of a pull request, written by Claude, as JSON: a summary, and comments
+        that each name a file path, a line number and a finding, in GitHub Markdown. The findings
+        may quote code from the pull request, and name repository file paths, code identifiers
+        such as functions, classes, variables and configuration keys, the names (never the
+        values) of secrets and environment variables, actions and their versions, commit SHAs
+        (40 hex characters), permissions and commands.
+      text: ${{ needs.claude.outputs.review }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    needs:
+      - claude
 consumers:
   - from: .github/workflows/claude-review.yml
     job: review
