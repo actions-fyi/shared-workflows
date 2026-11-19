@@ -331,7 +331,7 @@ jobs:
           fi
       - name: Review Pull Request
         if: env.REVIEW == 'true'
-        uses: anthropics/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.283
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The workflow's own token instead of the Claude GitHub App's. The app token exchange
