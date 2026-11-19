@@ -413,6 +413,7 @@ jobs:
           mapfile -t additions < <(jq -r '.additions[]' "$changes")
           (( ${#additions[@]} > 0 )) || fail "The fix lists no changes."
           uses='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]]'
+          version='^v?[0-9]+(\.[0-9]+)*$'
           for path in "${additions[@]}"; do
             case "$path" in
               /* | *..* | *//* | *$'\n'* | '') fail "The fix lists $path, which isn't a path in the repository." ;;
@@ -438,16 +439,29 @@ jobs:
               read -r old old_rest <<< "${before[i]#*uses:}"
               read -r new new_rest <<< "${after[i]#*uses:}"
               [[ "$old_rest" == "$new_rest" ]] || fail "The fix changes more than the action reference on $line."
+              # A quoted value keeps its quotes; they aren't part of the reference.
+              for quote in '"' "'"; do
+                if [[ "$old" == "$quote"*"$quote" ]]; then
+                  [[ "$new" == "$quote"*"$quote" ]] || fail "The fix changes the quotes on $line."
+                  old=${old:1:-1}
+                  new=${new:1:-1}
+                fi
+              done
               if [[ "$old" == ./* && "$new" == "\$/${old#./}" ]]; then
                 continue # ./path to $/path: the same action in this repository, at the running commit
               fi
               [[ "$old" == *@* && "$new" == *@* && "${old%@*}" == "${new%@*}" ]] \
                 || fail "The fix changes the action on $line from $old to $new; gh actions-lock only changes its version."
               # A partial version narrowed to a full one (v6 to v6.1.0), or a bare commit SHA
-              # rewritten to its tag. The lockfile pins the commit either way, and the fix commit's
-              # own check verifies the pin against the tag.
-              [[ "${new##*@}" == "${old##*@}".* || "${old##*@}" =~ ^[0-9a-f]{40}$ ]] \
-                || fail "The fix changes the action on $line from $old to $new; gh actions-lock only narrows a version or rewrites ./ to \$/."
+              # rewritten to its tag. Either way the new ref must be a version tag, never a branch:
+              # the lockfile pins the commit, and the fix commit's own check verifies the pin
+              # against the tag.
+              old_ref=${old##*@}
+              new_ref=${new##*@}
+              [[ "$new_ref" =~ $version ]] \
+                || fail "The fix changes the version on $line to $new_ref, which isn't a version tag."
+              [[ "$new_ref" == "$old_ref".* || "$old_ref" =~ ^[0-9a-f]{40}$ ]] \
+                || fail "The fix changes the version on $line from $old_ref to $new_ref; gh actions-lock only narrows a version, or rewrites a commit SHA to its tag."
             done
           done
           echo "::notice::The fix changes ${#additions[@]} file(s), all of them the lockfile or uses: lines."
