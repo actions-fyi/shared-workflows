@@ -48,7 +48,7 @@ env:
 jobs:
   zizmor:
     name: CI Config
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
       security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
       contents: read         # Only needed for private repos. Needed to clone the repo.
@@ -56,10 +56,6 @@ jobs:
     concurrency:
       group: zizmor-${{ github.ref }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:

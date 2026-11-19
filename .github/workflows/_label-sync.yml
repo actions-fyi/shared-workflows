@@ -17,17 +17,13 @@ permissions: {}
 jobs:
   labels:
     name: Labels
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     concurrency:
       group: label-sync-${{ github.ref }}
     permissions:
       contents: read # Check out the label config
       issues: write # Create and update labels
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Label Config
         uses: actions/checkout@v7.0.1
         with:
@@ -38,6 +34,6 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Sync Labels
-        uses: step-security/label-sync@v2.3.3
+        uses: EndBug/label-sync@v2.3.3
         with:
           config-file: upstream/.github/labels.yml

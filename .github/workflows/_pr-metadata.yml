@@ -85,8 +85,9 @@ jobs:
   resolve:
     name: Find Pull Request
     if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.run_attempt == 1
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       pull-requests: read # Find the pull request and read its metadata
     outputs:
       number: ${{ steps.resolve.outputs.number }}
@@ -97,10 +98,6 @@ jobs:
       body-hash: ${{ steps.resolve.outputs.body-hash }}
       unlabeled: ${{ steps.resolve.outputs.unlabeled }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # workflow_run.pull_requests is empty for fork pull requests, so the pull request is found by
       # its head. A head SHA alone can match several pull requests, so the head repository and
       # branch must match too, and anything but exactly one match does nothing rather than write to
@@ -173,17 +170,14 @@ jobs:
       needs.resolve.outputs.unlabeled == 'true'
       || needs.resolve.outputs.title-valid == 'false'
       || needs.resolve.outputs.write-description == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       pull-requests: read # Read the title, body, commits and diff
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ needs.resolve.outputs.number }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Collect Pull Request
         run: |
           dir="$RUNNER_TEMP/pull-request"
@@ -240,22 +234,19 @@ jobs:
     needs: [resolve, guard]
     # Only once: later pushes don't re-label, and labels set by people stay.
     if: needs.resolve.outputs.unlabeled == 'true' && needs.guard.outputs.verdict == 'clean'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 10
     concurrency:
       group: pr-metadata-labels-${{ needs.resolve.outputs.number }}
     # Haiku reads untrusted text, so this job can only read. It hands back label names, which the
     # apply job checks against the repository's labels before adding them.
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       issues: read # Read the repository's labels
       pull-requests: read # Read the pull request
     outputs:
       labels: ${{ steps.claude.outputs.structured_output }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: List Labels
         id: labels
         env:
@@ -304,7 +295,7 @@ jobs:
       - name: Classify
         id: claude
         if: steps.labels.outputs.labels != '[]'
-        uses: step-security/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -338,18 +329,15 @@ jobs:
     name: Apply Labels
     needs: [resolve, classify]
     if: needs.classify.outputs.labels != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 5
     concurrency:
       group: pr-metadata-labels-apply-${{ needs.resolve.outputs.number }}
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       issues: write # Label the pull request
       pull-requests: write # Label the pull request
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Apply Labels
         env:
           GH_TOKEN: ${{ github.token }}
@@ -372,19 +360,16 @@ jobs:
     name: Rewrite PR Title
     needs: [resolve, guard]
     if: needs.resolve.outputs.title-valid == 'false' && needs.guard.outputs.verdict == 'clean'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # Advisory: a title that stays invalid fails the pull request's own title check.
     continue-on-error: true
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       pull-requests: read # For claude-code-action's own API calls; the snapshot comes as an artifact
     outputs:
       # A valid Conventional Commits title, not yet screened.
       title: ${{ steps.check.outputs.title }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # No checkout: the workspace holds only the snapshot the guard screened, so Claude can read
       # nothing else from the pull request, and no .git/ holds a token.
       - name: Download Pull Request
@@ -402,7 +387,7 @@ jobs:
       # Read-only: Claude returns the title as structured output, and the apply job applies it.
       - name: Write Title
         id: claude
-        uses: step-security/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -489,19 +474,16 @@ jobs:
     name: Apply PR Title
     needs: [resolve, rewrite, screen-title]
     if: needs.rewrite.outputs.title != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     continue-on-error: true
     concurrency:
       group: pr-metadata-title-${{ needs.resolve.outputs.number }}
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       pull-requests: write # Rewrite the title
     outputs:
       applied: ${{ steps.apply.outputs.applied }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Apply Title
         id: apply
         env:
@@ -520,14 +502,11 @@ jobs:
     name: Re-run Lint Metadata
     needs: [resolve, apply-title]
     if: needs.apply-title.outputs.applied == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       actions: write # Re-run the failed jobs of the Lint Metadata runs
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Re-run Lint Metadata
         uses: actions/github-script@v9.0.0
         env:
@@ -565,7 +544,7 @@ jobs:
     name: Write PR Description
     needs: [resolve, guard]
     if: needs.resolve.outputs.write-description == 'true' && needs.guard.outputs.verdict == 'clean'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # Advisory: a description is a convenience.
     continue-on-error: true
     # A newer push describes a newer diff, so the older run is cancelled. The screen and post jobs
@@ -574,15 +553,12 @@ jobs:
       group: pr-metadata-description-${{ needs.resolve.outputs.number }}
       cancel-in-progress: true
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       pull-requests: read # For claude-code-action's own API calls; the snapshot comes as an artifact
     outputs:
       # Not yet screened.
       description: ${{ steps.read.outputs.description }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # No checkout, as in the rewrite job: only the snapshot the guard screened.
       - name: Download Pull Request
         uses: actions/download-artifact@v8.0.2
@@ -598,7 +574,7 @@ jobs:
       # once the screen passed.
       - name: Write Description
         id: claude
-        uses: step-security/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -683,18 +659,15 @@ jobs:
     name: Post PR Description
     needs: [resolve, description, screen-description]
     if: needs.description.outputs.description != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     continue-on-error: true
     concurrency:
       group: pr-metadata-description-${{ needs.resolve.outputs.number }}
       cancel-in-progress: true
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       pull-requests: write # Write the description
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Post Description
         uses: actions/github-script@v9.0.0
         env:

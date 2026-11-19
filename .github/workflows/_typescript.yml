@@ -80,7 +80,7 @@ defaults:
 jobs:
   project:
     name: Find Package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 5
     permissions:
       contents: read # Read package.json and the lockfile
@@ -91,10 +91,6 @@ jobs:
       node-version: ${{ steps.project.outputs.node-version }}
       node-version-file: ${{ steps.project.outputs.node-version-file }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
@@ -196,7 +192,7 @@ jobs:
     name: TypeScript
     needs: project
     if: needs.project.outputs.check == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 30
     # github.ref is refs/pull/<number>/merge for a pull request and a unique
     # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, so the two
@@ -213,10 +209,6 @@ jobs:
     env:
       MANAGER: ${{ needs.project.outputs.manager }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
@@ -230,7 +222,7 @@ jobs:
           package-manager-cache: false
       - name: Set Up Bun
         if: needs.project.outputs.manager == 'bun'
-        uses: step-security/setup-bun@v2.1.3
+        uses: oven-sh/setup-bun@v2.2.0
       # Corepack provides pnpm and Yarn in the version packageManager pins, or its own default
       # without one. Node.js 25 and later no longer ship it, so it's installed there, in the
       # version pinned at the top, which Renovate updates.

@@ -58,7 +58,7 @@ jobs:
     needs: guard
     # Only a text Prompt Guard judged clean. A flag or an error leaves the issue unlabeled.
     if: needs.guard.outputs.verdict == 'clean'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 10
     concurrency:
       group: auto-label-${{ github.event.issue.number }}
@@ -72,10 +72,6 @@ jobs:
     env:
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # The default branch: Claude Code loads CLAUDE.md and .claude/settings.json from the
       # working directory.
       - name: Checkout Default Branch
@@ -112,7 +108,7 @@ jobs:
       - name: Classify
         id: claude
         if: steps.labels.outputs.labels != '[]'
-        uses: step-security/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -143,17 +139,14 @@ jobs:
     name: Apply Labels
     needs: classify
     if: needs.classify.outputs.labels != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 5
     concurrency:
       group: auto-label-apply-${{ github.event.issue.number }}
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       issues: write # Label issues
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Apply Labels
         env:
           GH_TOKEN: ${{ github.token }}

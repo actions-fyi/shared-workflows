@@ -57,16 +57,12 @@ defaults:
 jobs:
   screen:
     name: Screen Text
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # Check out the default branch, which claude-code-action needs on pull requests
     env:
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # Runs before the checkout, in an empty working directory, and before any model sees the
       # text. A token embedded in a longer string is base64-encoded from one of three byte
       # offsets, so each offset's aligned encoding is searched for.
@@ -154,7 +150,7 @@ jobs:
       - name: Screen Text
         id: claude
         if: steps.secrets.outputs.blocked != 'true'
-        uses: step-security/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The workflow's own token instead of the Claude GitHub App's. The app token exchange

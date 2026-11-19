@@ -16,5 +16,6 @@ jobs:
     name: Metadata
     # What the title job of _metadata.yml declares; a called job can't get more.
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       pull-requests: read # Read the title and commits
     uses: $/.github/workflows/_metadata.yml

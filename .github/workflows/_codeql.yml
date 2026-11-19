@@ -75,16 +75,12 @@ permissions: {}
 jobs:
   languages:
     name: Languages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # Read the repository's languages
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Build Matrix
         id: matrix
         uses: actions/github-script@v9.0.0
@@ -131,7 +127,7 @@ jobs:
               language,
               'build-mode': compiled.has(language) || build.has(language) ? 'autobuild' : 'none',
               // CodeQL analyzes Swift only on macOS.
-              runner: language === 'swift' ? 'macos-latest' : 'ubuntu-latest',
+              runner: language === 'swift' ? 'macos-latest' : 'ubuntu-24.04-firewall',
             }));
             core.info(`Matrix: ${JSON.stringify(include)}`);
             core.setOutput('matrix', JSON.stringify({ include }));
@@ -147,10 +143,6 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
@@ -184,18 +176,15 @@ jobs:
     name: Upload (${{ matrix.language }})
     needs: [languages, analyze]
     if: ${{ !cancelled() && needs.languages.result == 'success' && needs.languages.outputs.matrix != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       security-events: write # Upload the results to code scanning
       actions: read # Let CodeQL read the workflow run
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Download Results
         uses: actions/download-artifact@v8.0.2
         with:
@@ -213,16 +202,13 @@ jobs:
     name: Results
     needs: [languages, analyze, upload]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       id-token: write # Exchange the job's OIDC token with Octo STS
     env:
       POST: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Check Results
         id: check
         env:
@@ -262,7 +248,7 @@ jobs:
         if: env.POST == 'true'
         id: sts
         continue-on-error: true
-        uses: step-security/octo-sts-action@v1.1.1
+        uses: octo-sts/action@v1.1.1
         with:
           scope: ${{ github.repository_owner }}
           identity: ${{ startsWith(github.workflow_ref, 'actions-fyi/shared-workflows/') && 'codeql-results.shared' || 'codeql-results' }}

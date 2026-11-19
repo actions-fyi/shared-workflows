@@ -77,8 +77,9 @@ jobs:
           && github.event.workflow_run.head_branch == github.event.repository.default_branch
         )
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       actions: read # Read the run's jobs
       pull-requests: read # Find the pull request
     outputs:
@@ -88,10 +89,6 @@ jobs:
       # Keeps the jobs of one pull request, or of the default branch, in order.
       key: ${{ steps.resolve.outputs.key }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # workflow_run.pull_requests is empty for fork pull requests, so the pull request is found by
       # its head. A head SHA alone can match several pull requests, so the head repository and
       # branch must match too, and anything but exactly one match does nothing rather than comment
@@ -145,19 +142,16 @@ jobs:
     name: Fetch Failed Logs
     needs: resolve
     if: needs.resolve.outputs.mode == 'report'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     concurrency:
       group: explain-actions-lock-${{ needs.resolve.outputs.key }}
       cancel-in-progress: true
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       actions: read # List the run's jobs and download their logs
     outputs:
       logs: ${{ steps.fetch.outputs.logs }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # A fork pull request controls what its run prints, so the logs are only passed on, never
       # printed.
       - name: Fetch Failed Logs
@@ -206,20 +200,17 @@ jobs:
     name: Write Explanation
     needs: [resolve, fetch]
     if: needs.fetch.outputs.logs != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     concurrency:
       group: explain-actions-lock-${{ needs.resolve.outputs.key }}
       cancel-in-progress: true
-    permissions: {} # None: Claude reads only the fetched logs
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
     outputs:
       # Not yet screened.
       title: ${{ steps.read.outputs.title }}
       body: ${{ steps.read.outputs.body }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # No checkout: the workspace holds only the logs, so Claude can read nothing else from the
       # pull request, and no .git/ holds a token.
       - name: Collect Logs
@@ -232,7 +223,7 @@ jobs:
       # once the screen passed.
       - name: Write Explanation
         id: claude
-        uses: step-security/claude-code-action@v1.0.268
+        uses: anthropics/claude-code-action@v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -332,7 +323,7 @@ jobs:
     name: Report Failure
     needs: [resolve, fetch, explain, screen]
     if: always() && !cancelled() && needs.resolve.outputs.mode == 'report'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that opens, comments on or closes an issue or a pull request, in any
     # workflow, resolve-report included: two quick runs never both create a comment or an issue.
     # queue: max lets the others wait their turn instead of replacing each other.
@@ -340,13 +331,10 @@ jobs:
       group: issues-and-pull-requests
       queue: max
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       issues: write # Open the issue, or comment on the open one
       pull-requests: write # Create, update and unminimize the comment
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # Claude's text comes in through env only when it was screened, and the script never prints
       # it.
       - name: Post Report
@@ -419,18 +407,15 @@ jobs:
     name: Resolve Report
     needs: resolve
     if: needs.resolve.outputs.mode == 'resolve'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     concurrency:
       group: issues-and-pull-requests
       queue: max
     permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       issues: write # Comment on and close the open issue
       pull-requests: write # Minimize the comment
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Resolve Report
         uses: actions/github-script@v9.0.0
         env:

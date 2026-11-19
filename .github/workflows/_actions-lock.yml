@@ -92,16 +92,12 @@ defaults:
 jobs:
   changes:
     name: Changed Workflows
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # Compare the changes against the base
     outputs:
       check: ${{ steps.changes.outputs.check }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # A three-dot compare lists what the pull request changes since it branched off; for a merge
       # group, the base is an ancestor of the head, so it lists everything the group adds; for a
       # push, it lists what the pushed commits add since the merge base of before and after. The API
@@ -152,7 +148,7 @@ jobs:
     name: Actions Lockfile
     needs: changes
     if: needs.changes.outputs.check == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # Per caller: in a repository with two callers, its own and a ruleset's, neither cancels the other.
     concurrency:
       group: actions-lock-check-${{ github.workflow_ref }}-${{ github.ref }}
@@ -163,10 +159,6 @@ jobs:
       # found, missing, or empty without workflows; read by the fix job after a passed check
       lockfile: ${{ steps.lockfile.outputs.state }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # The pull request's head, not its merge commit, so the check and the fix see the same files.
       # The merge queue checks the merged result.
       - name: Checkout Repository
@@ -260,7 +252,7 @@ jobs:
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
     # of replacing each other; it can't be combined with cancel-in-progress.
@@ -276,10 +268,6 @@ jobs:
       # success or failure: whether a fix run that changes nothing, or can't run, fails this job.
       CHECK_RESULT: ${{ needs.check.result }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # The branch's head now, because the fix is committed on top of it. It differs from the
       # commit the check ran on when something was pushed, or another fix job committed, since.
       - name: Checkout Repository
@@ -367,7 +355,7 @@ jobs:
         if: steps.fix.outputs.changed == 'true'
         id: sts
         continue-on-error: true
-        uses: step-security/octo-sts-action@v1.1.1
+        uses: octo-sts/action@v1.1.1
         with:
           scope: ${{ github.repository_owner }}
           identity: ${{ startsWith(github.workflow_ref, 'actions-fyi/shared-workflows/') && 'actions-lock.shared' || 'actions-lock' }}

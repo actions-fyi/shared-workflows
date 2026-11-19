@@ -27,16 +27,12 @@ permissions: {}
 jobs:
   changes:
     name: Changed Workflows
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # Compare the changes against the base
     outputs:
       lint: ${{ steps.changes.outputs.lint }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       # A three-dot compare lists what the pull request changes since it branched off; for a merge
       # group, the base is an ancestor of the head, so it lists everything the group adds. The API
       # lists at most 300 files, and a larger or unlistable change is linted rather than guessed.
@@ -72,7 +68,7 @@ jobs:
     name: GitHub Actions
     needs: changes
     if: needs.changes.outputs.lint == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-firewall
     # github.ref is refs/pull/<number>/merge for a pull request and a unique
     # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, so the two
     # never share a group.
@@ -81,10 +77,6 @@ jobs:
     permissions:
       contents: read # Read workflow files
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@v2.23.0
-        with:
-          egress-policy: audit
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
