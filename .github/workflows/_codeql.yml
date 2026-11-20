@@ -148,7 +148,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.39.3
+        uses: github/codeql-action/init@v4.39.4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -157,7 +157,7 @@ jobs:
               - exclude:
                   id: actions/unpinned-tag
       - name: Analyze
-        uses: github/codeql-action/analyze@v4.39.3
+        uses: github/codeql-action/analyze@v4.39.4
         with:
           category: /language:${{ matrix.language }}
           upload: never
@@ -191,7 +191,7 @@ jobs:
           name: codeql-results-${{ matrix.language }}
           path: ${{ runner.temp }}/codeql-results
       - name: Upload Results
-        uses: github/codeql-action/upload-sarif@v4.39.3
+        uses: github/codeql-action/upload-sarif@v4.39.4
         with:
           sarif_file: ${{ runner.temp }}/codeql-results
 
