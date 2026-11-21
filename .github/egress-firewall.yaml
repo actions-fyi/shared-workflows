@@ -33,6 +33,8 @@ allow:
   - packages.microsoft.com   # the runner image's Microsoft apt source
   - esm.ubuntu.com           # the runner image's Ubuntu Pro apt source
   - motd.ubuntu.com          # the runner image's apt hooks
+  # autofix.ci: the oxfmt job of _oxfmt.yml hands its diff to the app
+  - api.autofix.com # autofix.ci's API
   # Octo STS: the CodeQL results, flowpact commit, lockfile fix and sync jobs' tokens
   - octo-sts.dev # token exchange
   # Sigstore: gh attestation verify of the flowpact CLI
