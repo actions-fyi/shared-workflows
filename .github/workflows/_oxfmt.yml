@@ -10,11 +10,16 @@ name: oxfmt
 # autofix.ci identifies the run by its workflow name, which a called workflow takes from its caller,
 # so only the caller must be named `autofix.ci`. The app must also be installed in the repository
 # (https://autofix.ci/setup). It can't be an org ruleset workflow: the app needs a workflow in the
-# repository itself, so repositories get a caller from the autofix.yml template of
+# repository itself, so repositories get a caller from the oxfmt.yml template of
 # actions-fyi/.github.
 #
 # oxfmt runs in the version the repository locks in package-lock.json, so the fix matches what its
 # format:check enforces. The install skips lifecycle scripts: only oxfmt's binary is needed.
+#
+# autofix-ci/action refuses a diff that touches .github/ ("not allowed to modify the .github
+# directory"), and oxfmt formats the YAML there too. So oxfmt's changes under .github/ are discarded
+# before the handover, and everything else is still fixed. Unformatted files under .github/ stay
+# for a person to fix; the repository's format:check still reports them.
 #
 # The calling job must grant what the oxfmt job declares:
 #   contents: read  # check the repository out
@@ -47,6 +52,9 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Run oxfmt
         run: npx --no-install oxfmt .
+      # autofix.ci can't change .github/; see the top.
+      - name: Drop Changes Under .github
+        run: git checkout -- .github
       # Must stay the job's last step: it hands the working tree's changes to autofix.ci.
       - name: Hand Over Fixes
         uses: autofix-ci/action@v1.3.4
