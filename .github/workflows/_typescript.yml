@@ -45,6 +45,14 @@ name: Test
 # read-only token and no secrets, checks out without persisting credentials, and restores and saves
 # no cache: a cache written by a pull request's run would only ever be read by that pull request.
 #
+# Coverage isn't reported here, because that takes a token that can write, which this run must
+# not hold. Where the package's scripts write a Cobertura XML coverage report to the path of the
+# coverage-file input, the check job hands it on as the artifact coverage.<language>, or
+# coverage.<language>.<directory> for a package outside the root, which holds the one file
+# cobertura.xml. _coverage.yml reports it from a run of its own, after this one; see there for
+# the artifact's contract, which the checks of other languages follow too. Without the file,
+# nothing is handed on.
+#
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
 #   contents: read  # project: read package.json and the lockfile; check: check the package out
@@ -65,6 +73,19 @@ on:
         type: string
         required: false
         default: .
+      coverage-file:
+        description: >-
+          The Cobertura XML coverage report the package's scripts write, relative to the working
+          directory. It is handed on to _coverage.yml when it exists.
+        type: string
+        required: false
+        default: coverage/cobertura-coverage.xml
+      coverage-language:
+        description: >-
+          The language the coverage is reported under: typescript or javascript.
+        type: string
+        required: false
+        default: typescript
 
 permissions: {}
 
@@ -299,3 +320,38 @@ jobs:
             echo "$changed"
             exit 1
           fi
+      # Only after every script passed: a failed test run leaves a partial report. The file is
+      # copied under the name the artifact's contract fixes. A symlink is refused: the artifact
+      # would carry whatever it points to on the runner. The name carries the language and the
+      # working directory, so two calls in one run, for two packages, don't collide.
+      - name: Find Coverage Report
+        id: coverage
+        env:
+          COVERAGE_FILE: ${{ inputs.coverage-file }}
+          COVERAGE_LANGUAGE: ${{ inputs.coverage-language }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          if [[ ! -f "$COVERAGE_FILE" || -L "$COVERAGE_FILE" ]]; then
+            echo "::notice::The scripts wrote no coverage report to $COVERAGE_FILE, so there is none to hand on."
+            exit 0
+          fi
+          if [[ ! "$COVERAGE_LANGUAGE" =~ ^[a-z]+$ ]]; then
+            echo "::error::The coverage-language input must be a lowercase word, such as typescript."
+            exit 1
+          fi
+          slug="${WORKING_DIRECTORY#./}"
+          slug="${slug%/}"
+          [[ "$slug" == "." ]] && slug=""
+          slug="${slug//[^A-Za-z0-9_-]/-}"
+          mkdir -p "$RUNNER_TEMP/coverage"
+          cp -- "$COVERAGE_FILE" "$RUNNER_TEMP/coverage/cobertura.xml"
+          echo "artifact=coverage.$COVERAGE_LANGUAGE${slug:+.$slug}" >> "$GITHUB_OUTPUT"
+      - name: Upload Coverage Report
+        if: steps.coverage.outputs.artifact != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ steps.coverage.outputs.artifact }}
+          path: ${{ runner.temp }}/coverage/cobertura.xml
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
