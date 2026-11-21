@@ -1,0 +1,265 @@
+name: autofix.ci
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags, and holds the autofix.ci job of a Node.js package: install its
+# locked dependencies, run its own formatting scripts, and hand whatever they changed to autofix.ci,
+# which commits it to the pull request. Callers call it by full path and tag; this repository's own
+# autofix.yml calls it with `$/`. It runs as part of the caller's run, in the target repository's
+# context: the caller's event, token and secrets.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# autofix.ci is a GitHub App, so a repository needs it installed (https://autofix.ci/setup), and it
+# identifies the run by its workflow name: the caller must be named `autofix.ci`. A called
+# workflow's run carries the caller's name, so naming this file autofix.ci too is only for
+# consistency. Unlike the checks the org ruleset runs, autofix.ci can't be a ruleset workflow: the
+# app needs a workflow in the repository itself. So each repository gets a caller from the
+# autofix.yml template of actions-fyi/.github, for pull requests only; see there for why not pushes.
+#
+# It formats with the package's own tooling, not a formatter chosen here: a repository keeps one
+# formatter, enforced by its format:check script in _typescript.yml, and this runs that same
+# formatter's write mode. A second formatter on top, such as a code-quality service's own, would
+# disagree with it on edge cases, and each would undo the other's changes.
+#
+# Callers can't filter by paths, so the workflow always runs, and the project job decides whether
+# there is a package: a package.json in the working directory. If not, the fix job is skipped and
+# the run passes. It shares the project job with _typescript.yml; keep the two in step.
+#
+# What the fix job does, in order:
+# - Sets up Node.js and the package manager, and installs from the lockfile, as _typescript.yml
+#   does. Registry signatures aren't verified here: _typescript.yml does that on the same commit.
+# - Runs each script of the scripts input that package.json defines, in the given order, and skips
+#   the ones it doesn't. A failing script fails the job before anything is handed over, because its
+#   changes may be partial.
+# - Hands the changes to autofix-ci/action, which must be the job's last step and its only call:
+#   when the working tree differs, it uploads the diff and autofix.ci pushes a commit to the pull
+#   request, which starts a new run; when nothing changed, it does nothing. Pushes by the app start
+#   workflows, unlike the job token's, so the fix commit gets its checks. fail-fast is left at its
+#   default, so other workflows of the unfixed commit are cancelled: their results are moot.
+#
+# The fix job runs the repository's code: install scripts of its dependencies, and its scripts,
+# which a pull request can change. So it holds a read-only token and no secrets, and checks out
+# without persisting credentials. It can't push; only the app writes, and only the diff it got.
+# The app applies the diff onto the pull request's head, so a fork's pull request is fixed too.
+#
+# Its network needs on the firewall runner, beyond the package registry: autofix.ci's API at
+# api.autofix.com (formerly api.autofix.ci), and the artifact upload, which the firewall allows by
+# default. Each repository's egress-firewall.yaml must allow api.autofix.com before enforce mode.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   contents: read  # project: read package.json and the lockfile; fix: check the package out
+on:
+  workflow_call:
+    inputs:
+      scripts:
+        description: >-
+          The package.json scripts that fix files, run in this order, separated by spaces or
+          commas. A script the package doesn't define is skipped.
+        type: string
+        required: false
+        default: format
+      working-directory:
+        description: >-
+          The directory of the package, relative to the repository's root. It must hold
+          package.json and the lockfile.
+        type: string
+        required: false
+        default: .
+
+permissions: {}
+
+env:
+  # Only installed where Node.js doesn't ship Corepack; see the Enable Corepack step.
+  # renovate: datasource=npm depName=corepack
+  COREPACK_VERSION: 0.36.0
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  project:
+    name: Find Package
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 5
+    permissions:
+      contents: read # Read package.json and the lockfile
+    outputs:
+      check: ${{ steps.project.outputs.check }}
+      manager: ${{ steps.project.outputs.manager }}
+      install: ${{ steps.project.outputs.install }}
+      node-version: ${{ steps.project.outputs.node-version }}
+      node-version-file: ${{ steps.project.outputs.node-version-file }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Only reads files; nothing from the repository runs here. The outputs are fixed words and
+      # paths built from the caller's working-directory, never text from package.json.
+      - name: Find Package
+        id: project
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [[ -d "$WORKING_DIRECTORY" ]] \
+            || fail "The working directory $WORKING_DIRECTORY doesn't exist."
+          cd "$WORKING_DIRECTORY"
+          where="$WORKING_DIRECTORY"
+          [[ "${where%/}" == "." ]] && where="the repository's root"
+          if [[ ! -f package.json ]]; then
+            echo "::notice::No package.json in $where. Nothing to check."
+            echo "check=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jq -e 'type == "object"' package.json > /dev/null \
+            || fail "package.json isn't a JSON object."
+
+          # packageManager is "<name>@<version>", optionally with a hash. Without it, the lockfile
+          # tells, in this order when a package has more than one.
+          manager="$(jq -r '(.packageManager // "") | tostring | split("@")[0] // ""' package.json)"
+          lockfile=""
+          has() {
+            local file
+            for file in "$@"; do
+              if [[ -f "$file" ]]; then
+                lockfile="$file"
+                return 0
+              fi
+            done
+            return 1
+          }
+          case "$manager" in
+            npm) has package-lock.json npm-shrinkwrap.json || true ;;
+            pnpm) has pnpm-lock.yaml || true ;;
+            yarn) has yarn.lock || true ;;
+            bun) has bun.lock bun.lockb || true ;;
+            "")
+              if has package-lock.json npm-shrinkwrap.json; then
+                manager=npm
+              elif has pnpm-lock.yaml; then
+                manager=pnpm
+              elif has yarn.lock; then
+                manager=yarn
+              elif has bun.lock bun.lockb; then
+                manager=bun
+              else
+                manager=npm
+              fi
+              ;;
+            *) fail "package.json names the package manager $manager, which this check doesn't support. It supports npm, pnpm, yarn and bun." ;;
+          esac
+
+          install=true
+          if [[ -z "$lockfile" ]]; then
+            dependencies="$(jq '[.dependencies, .devDependencies, .optionalDependencies]
+              | map(select(type == "object") | length) | add // 0' package.json)"
+            (( dependencies == 0 )) \
+              || fail "package.json declares dependencies, but there's no $manager lockfile next to it. Commit the lockfile, so every install gets the same versions."
+            echo "::notice::package.json declares no dependencies and has no lockfile, so nothing is installed."
+            install=false
+          fi
+
+          # setup-node reads a version file relative to the repository's root.
+          prefix="${WORKING_DIRECTORY%/}/"
+          [[ "$prefix" == "./" ]] && prefix=""
+          node_version=""
+          node_version_file=""
+          if [[ -f .nvmrc ]]; then
+            node_version_file="${prefix}.nvmrc"
+          elif [[ -f .node-version ]]; then
+            node_version_file="${prefix}.node-version"
+          elif jq -e '(.engines.node // .volta.node // "") | tostring | length > 0' package.json > /dev/null; then
+            node_version_file="${prefix}package.json"
+          else
+            node_version="lts/*"
+          fi
+
+          {
+            echo "check=true"
+            echo "manager=$manager"
+            echo "install=$install"
+            echo "node-version=$node_version"
+            echo "node-version-file=$node_version_file"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Checking the package in $where with $manager${lockfile:+, locked by $lockfile}."
+
+  fix:
+    name: Autofix
+    needs: project
+    if: needs.project.outputs.check == 'true'
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 20
+    # A newer push to the pull request makes this run's diff stale.
+    concurrency:
+      group: autofix-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: true
+    permissions:
+      contents: read # Check the package out
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      MANAGER: ${{ needs.project.outputs.manager }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # No cache, as in _typescript.yml: a cache a pull request's run writes is only read by it.
+      - name: Set Up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ needs.project.outputs.node-version }}
+          node-version-file: ${{ needs.project.outputs.node-version-file }}
+          package-manager-cache: false
+      - name: Set Up Bun
+        if: needs.project.outputs.manager == 'bun'
+        uses: oven-sh/setup-bun@v2.2.0
+      - name: Enable Corepack
+        if: needs.project.outputs.manager == 'pnpm' || needs.project.outputs.manager == 'yarn'
+        run: |
+          command -v corepack > /dev/null || npm install --global "corepack@$COREPACK_VERSION"
+          corepack enable
+      - name: Install Dependencies
+        if: needs.project.outputs.install == 'true'
+        run: |
+          case "$MANAGER" in
+            npm) npm ci ;;
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn)
+              if [[ "$(yarn --version)" == 1.* ]]; then
+                yarn install --frozen-lockfile
+              else
+                yarn install --immutable
+              fi
+              ;;
+            bun) bun install --frozen-lockfile ;;
+          esac
+      - name: Run Fixers
+        env:
+          SCRIPTS: ${{ inputs.scripts }}
+        run: |
+          read -r -a names <<< "${SCRIPTS//,/ }"
+          ran=0
+          for name in "${names[@]}"; do
+            if ! jq -e --arg name "$name" '.scripts[$name] | type == "string"' package.json > /dev/null; then
+              echo "::notice::package.json defines no $name script, so it was skipped."
+              continue
+            fi
+            ran=$((ran + 1))
+            echo "::group::$MANAGER run $name"
+            "$MANAGER" run "$name"
+            echo "::endgroup::"
+          done
+          if (( ran == 0 )); then
+            echo "::notice::package.json defines none of these scripts, so nothing was fixed: ${names[*]}"
+          fi
+      # Must stay the last step; see the top.
+      - name: Hand Over Fixes
+        uses: autofix-ci/action@v1.3.4

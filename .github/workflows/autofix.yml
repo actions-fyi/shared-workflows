@@ -1,0 +1,20 @@
+name: autofix.ci
+# This repository's caller of its own shared workflow _autofix.yml, which holds the job; see there.
+# It calls the sibling with `$/`, so a pull request runs its own version of it. autofix.ci
+# identifies the run by this name, so it must stay `autofix.ci`.
+#
+# This repository has no package of its own: the project job finds no package.json at the root,
+# the fix job is skipped, and the call passes. That keeps the workflow itself checked on every
+# pull request without autofix.ci touching this repository.
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  autofix:
+    name: autofix.ci
+    # What the jobs of _autofix.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read package.json and the lockfile, and check the package out
+    uses: $/.github/workflows/_autofix.yml
