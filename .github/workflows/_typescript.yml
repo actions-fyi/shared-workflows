@@ -10,8 +10,9 @@ name: Test
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
 # Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
-# it must also run on merge_group, where it checks the merged result. It isn't meant for pushes:
-# the gate belongs on the pull request, and nothing here is cached for a later run to reuse.
+# it must also run on merge_group, where it checks the merged result. The gate belongs on the pull
+# request, and nothing here is cached for a later run to reuse. A caller on pushes to the default
+# branch gates nothing, but it reports the coverage that pull requests are compared with.
 #
 # Callers can't filter by paths: a ruleset ignores paths filters, and a required check that never
 # runs would block merging. So the workflow always runs, and the project job decides whether there
@@ -45,9 +46,37 @@ name: Test
 # read-only token and no secrets, checks out without persisting credentials, and restores and saves
 # no cache: a cache written by a pull request's run would only ever be read by that pull request.
 #
+# Coverage is reported where the repository's custom property coverage-providers, a multi select,
+# names a provider. Without the property, nothing below runs.
+# - github: GitHub Code Quality, with actions/upload-code-coverage. Code Quality must be enabled
+#   in the repository.
+# - deepsource: DeepSource, with its CLI and the job's OIDC token, so there is no DSN secret. The
+#   repository must be activated on DeepSource, with the test-coverage analyzer enabled.
+# The package writes the report itself, in one of its scripts: a Cobertura XML file at the path
+# of the coverage-file input, which both providers read. LCOV isn't enough, since GitHub accepts
+# only Cobertura. The check job only hands the file on as an artifact. A job per provider, which
+# runs nothing from the repository, downloads it and reports it, so the token that can write
+# never meets the package's code. The report is what that code wrote, and is treated as data.
+#
+# Coverage is reported for pull requests from the repository itself and for pushes to the default
+# branch, against the pull request's head commit or the pushed commit. Not for fork pull requests,
+# whose runs get no write token, and not for merge groups, whose commits neither provider shows.
+# The pull request's report is measured on its merge with the base branch, which is what the check
+# job checks out, so a line can be off where the base branch moved since.
+#
+# Reporting never fails the check: a missing report is a warning, and a provider that rejects the
+# upload is an error annotation on a job that passes. A provider's outage can't block merging.
+#
+# Where the egress firewall enforces, the repository's .github/egress-firewall.yaml must allow
+# cli.deepsource.com and app.deepsource.com for the deepsource provider. The github provider only
+# reaches api.github.com.
+#
 # The calling job must grant the union of what the jobs below declare, or the call fails before
-# anything runs:
-#   contents: read  # project: read package.json and the lockfile; check: check the package out
+# anything runs, whether or not the repository reports coverage:
+#   contents: read       # project: read package.json and the lockfile; check: check the package
+#                        # out; the coverage jobs: let the egress firewall read its policy
+#   code-quality: write  # coverage-github: upload the coverage report to GitHub Code Quality
+#   id-token: write      # coverage-deepsource: exchange the job's OIDC token with DeepSource
 on:
   workflow_call:
     inputs:
@@ -65,6 +94,20 @@ on:
         type: string
         required: false
         default: .
+      coverage-file:
+        description: >-
+          The Cobertura XML coverage report the package's scripts write, relative to the working
+          directory. Only read where the repository's custom property coverage-providers names a
+          provider.
+        type: string
+        required: false
+        default: coverage/cobertura-coverage.xml
+      coverage-language:
+        description: >-
+          The language GitHub Code Quality files the coverage under, by its Linguist name.
+        type: string
+        required: false
+        default: TypeScript
 
 permissions: {}
 
@@ -72,6 +115,11 @@ env:
   # Only installed where Node.js doesn't ship Corepack; see the Enable Corepack step.
   # renovate: datasource=npm depName=corepack
   COREPACK_VERSION: 0.36.0
+  # The DeepSource CLI, from https://cli.deepsource.com/manifest.json: its version and the SHA-256
+  # of deepsource_<version>_linux_amd64.tar.gz. Renovate has no datasource for it, so update the
+  # two together by hand.
+  DEEPSOURCE_CLI_VERSION: 2.0.57
+  DEEPSOURCE_CLI_SHA256: 7a22daa62328fde38e275674ed0b52b780b2ac48f4af8f1b92eff0a347b81ab0
 
 defaults:
   run:
@@ -90,6 +138,10 @@ jobs:
       install: ${{ steps.project.outputs.install }}
       node-version: ${{ steps.project.outputs.node-version }}
       node-version-file: ${{ steps.project.outputs.node-version-file }}
+      coverage-github: ${{ steps.coverage.outputs.github }}
+      coverage-deepsource: ${{ steps.coverage.outputs.deepsource }}
+      coverage-artifact: ${{ steps.coverage.outputs.artifact }}
+      coverage-label: ${{ steps.coverage.outputs.label }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
@@ -187,6 +239,54 @@ jobs:
             echo "node-version-file=$node_version_file"
           } >> "$GITHUB_OUTPUT"
           echo "::notice::Checking the package in $where with $manager${lockfile:+, locked by $lockfile}."
+      # The property's values come from the event payload, where a multi select is a list. They
+      # are the org's own choices, but still go through the environment and are matched against
+      # fixed words, never run. The artifact and label carry the working directory, so two calls
+      # in one run, for two packages, don't collide.
+      - name: Find Coverage Providers
+        id: coverage
+        if: steps.project.outputs.check == 'true'
+        env:
+          PROVIDERS: ${{ toJSON(github.event.repository.custom_properties['coverage-providers']) }}
+          EVENT_NAME: ${{ github.event_name }}
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          DEFAULT_BRANCH: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          github=false
+          deepsource=false
+          while IFS= read -r provider; do
+            case "$provider" in
+              github) github=true ;;
+              deepsource) deepsource=true ;;
+              *) echo "::warning::The custom property coverage-providers names $provider, which this check doesn't know. It knows github and deepsource." ;;
+            esac
+          done < <(jq -r 'if type == "array" then .[] elif type == "string" then . else empty end | tostring' <<< "$PROVIDERS")
+
+          if [[ "$github" == true || "$deepsource" == true ]]; then
+            skip=""
+            case "$EVENT_NAME" in
+              pull_request) [[ "$FORK" == false ]] || skip="this pull request comes from a fork" ;;
+              push) [[ "$DEFAULT_BRANCH" == true ]] || skip="this push isn't to the default branch" ;;
+              *) skip="the event is $EVENT_NAME" ;;
+            esac
+            if [[ -n "$skip" ]]; then
+              echo "::notice::Coverage isn't reported, because $skip."
+              github=false
+              deepsource=false
+            fi
+          fi
+
+          slug="${WORKING_DIRECTORY#./}"
+          slug="${slug%/}"
+          [[ "$slug" == "." ]] && slug=""
+          slug="${slug//[^A-Za-z0-9._-]/-}"
+          {
+            echo "github=$github"
+            echo "deepsource=$deepsource"
+            echo "artifact=coverage${slug:+-$slug}"
+            echo "label=code-coverage/${slug:-package}"
+          } >> "$GITHUB_OUTPUT"
 
   check:
     name: TypeScript
@@ -208,6 +308,8 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     env:
       MANAGER: ${{ needs.project.outputs.manager }}
+    outputs:
+      coverage: ${{ steps.coverage.outputs.found }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
@@ -298,4 +400,96 @@ jobs:
             echo "::error::Installing or running the scripts changed tracked files. Commit the result, or stop the scripts from writing to them."
             echo "$changed"
             exit 1
+          fi
+      # Only where a provider is named, and only after every script passed: a failed test run
+      # leaves a partial report. The file is copied under a fixed name, so the coverage jobs know
+      # it. A symlink is refused: the artifact would carry whatever it points to on the runner.
+      - name: Find Coverage Report
+        id: coverage
+        if: needs.project.outputs.coverage-github == 'true' || needs.project.outputs.coverage-deepsource == 'true'
+        env:
+          COVERAGE_FILE: ${{ inputs.coverage-file }}
+        run: |
+          if [[ ! -f "$COVERAGE_FILE" || -L "$COVERAGE_FILE" ]]; then
+            echo "::warning::The custom property coverage-providers asks for coverage, but the scripts wrote no Cobertura XML report to $COVERAGE_FILE. Nothing is reported."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/coverage"
+          cp -- "$COVERAGE_FILE" "$RUNNER_TEMP/coverage/cobertura.xml"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+      - name: Upload Coverage Report
+        if: steps.coverage.outputs.found == 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ needs.project.outputs.coverage-artifact }}
+          path: ${{ runner.temp }}/coverage/cobertura.xml
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # Runs nothing from the repository; see the top. The action reports a pull request against its
+  # head commit and a push against the pushed commit, both taken from the event. With
+  # fail-on-error off, a rejected upload is an error annotation and the job passes.
+  coverage-github:
+    name: Report Coverage to GitHub
+    needs: [project, check]
+    if: needs.project.outputs.coverage-github == 'true' && needs.check.outputs.coverage == 'true'
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 10
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+      code-quality: write # Upload the coverage report to GitHub Code Quality
+    steps:
+      - name: Download Coverage Report
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: ${{ needs.project.outputs.coverage-artifact }}
+          path: ${{ runner.temp }}/coverage
+      - name: Report Coverage
+        uses: actions/upload-code-coverage@v1.4.4
+        with:
+          file: ${{ runner.temp }}/coverage/cobertura.xml
+          language: ${{ inputs.coverage-language }}
+          label: ${{ needs.project.outputs.coverage-label }}
+          fail-on-error: false
+
+  # Runs nothing from the repository; see the top. The CLI is downloaded in the version pinned at
+  # the top and checked against its SHA-256 before it runs. It exchanges the job's OIDC token for
+  # a DSN of this repository, and --commit names the commit, so it needs no checkout: the pull
+  # request's head, which DeepSource analyzes, not the merge commit the run is on. The key is
+  # javascript for TypeScript too; DeepSource has no other.
+  coverage-deepsource:
+    name: Report Coverage to DeepSource
+    needs: [project, check]
+    if: needs.project.outputs.coverage-deepsource == 'true' && needs.check.outputs.coverage == 'true'
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 10
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+      id-token: write # Exchange the job's OIDC token with DeepSource
+    steps:
+      - name: Download Coverage Report
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: ${{ needs.project.outputs.coverage-artifact }}
+          path: ${{ runner.temp }}/coverage
+      - name: Install DeepSource CLI
+        run: |
+          archive="deepsource_${DEEPSOURCE_CLI_VERSION}_linux_amd64.tar.gz"
+          dir="$RUNNER_TEMP/deepsource"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$dir/$archive" "https://cli.deepsource.com/build/$archive"
+          echo "$DEEPSOURCE_CLI_SHA256  $dir/$archive" | sha256sum --check --strict
+          tar -xzf "$dir/$archive" -C "$dir" deepsource
+      - name: Report Coverage
+        env:
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          status=0
+          "$RUNNER_TEMP/deepsource/deepsource" report --analyzer test-coverage --key javascript \
+            --value-file "$RUNNER_TEMP/coverage/cobertura.xml" --commit "$COMMIT" --use-oidc \
+            || status=$?
+          if (( status != 0 )); then
+            echo "::error::DeepSource didn't accept the coverage report (exit code $status). See the output above."
           fi
