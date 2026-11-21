@@ -211,6 +211,23 @@ remotes:
       - artifact-id
       - artifact-url
       - artifact-digest
+  actions/upload-code-coverage@v1.4.4:
+    sha: 2b21a77928be8d5168c2b9581a67f2adbebacc52
+    kind: action
+    using: composite
+    inputs:
+      file:
+        required: true
+      language:
+        required: true
+      label:
+        required: true
+      fail-on-error:
+        default: 'true'
+      wait-for-processing-timeout:
+        default: '160'
+      token:
+        default: ${{ github.token }}
   amannn/action-semantic-pull-request@v6.1.2:
     sha: 2252a14e810aa9b85c2d560bd7070c802206ecf6
     kind: action
