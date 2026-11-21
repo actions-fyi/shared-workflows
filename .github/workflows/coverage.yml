@@ -19,6 +19,7 @@ permissions: {}
 jobs:
   coverage:
     name: Coverage
+    cache-mode: none
     # The union of what the jobs of _coverage.yml declare; a called job can't get more.
     permissions:
       actions: read # List the run's artifacts and download the coverage reports
