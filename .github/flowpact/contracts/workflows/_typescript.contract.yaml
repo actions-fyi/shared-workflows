@@ -13,12 +13,12 @@ interface:
       type: string
       required: false
       default: coverage/cobertura-coverage.xml
-      description: The Cobertura XML coverage report the package's scripts write, relative to the working directory. Only read where the repository's custom property coverage-providers names a provider.
+      description: The Cobertura XML coverage report the package's scripts write, relative to the working directory. It is handed on to _coverage.yml when it exists.
     coverage-language:
       type: string
       required: false
-      default: TypeScript
-      description: The language GitHub Code Quality files the coverage under, by its Linguist name.
+      default: typescript
+      description: 'The language the coverage is reported under: typescript or javascript.'
     scripts:
       type: string
       required: false
