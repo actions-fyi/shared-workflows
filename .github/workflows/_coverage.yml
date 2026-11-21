@@ -17,10 +17,23 @@ name: Report Coverage
 # - deepsource: DeepSource, with its CLI and the job's OIDC token, so there is no DSN secret. The
 #   repository must be activated on DeepSource, with the test-coverage analyzer enabled.
 #
-# Coverage is reported for a test run that passed, on a pull request or on a push to the default
-# branch, against the run's head commit. Merge groups aren't reported: neither provider shows
-# their commits. A pull request's report is measured on its merge with the base branch, which is
-# what the test run checks out, so a line can be off where the base branch moved since.
+# Coverage is reported for a test run that passed, on a pull request from the repository itself
+# or on a push to the default branch, against the run's head commit. Not reported:
+# - Fork pull requests. GitHub's own uploader skips them on every event, pull_request_target
+#   included, where it would hold a token that can write, and neither provider documents taking a
+#   fork's coverage.
+# - Merge groups: neither provider shows their commits.
+# A pull request's report is measured on its merge with the base branch, which is what the test
+# run checks out, so a line can be off where the base branch moved since. Both providers ask for
+# the head commit to be checked out instead; that is the test workflow's choice, not this one's.
+#
+# What the uploaders need, and get here without the pull_request event or a checkout:
+# - GitHub takes the commit and the pull request's number in the request, which is how its
+#   uploader reports a pull request from a push event too. The file is sent as it is.
+# - DeepSource's CLI takes the commit from --commit and then leaves git alone. It reads no other
+#   GitHub variable, and exchanges the OIDC token without looking into it. It does send its
+#   working directory along, which DeepSource resolves the report's paths against, so it must run
+#   where the repository's root was in the test run: the workspace, the same path in both runs.
 #
 # The artifact's contract, which the check of every language follows:
 # - Its name is coverage.<language>, or coverage.<language>.<package> for a second package in the
@@ -32,9 +45,9 @@ name: Report Coverage
 #   deepsource.report, in a format DeepSource reads, which is then sent to DeepSource instead.
 # Other artifacts of the run are ignored, and so are other files in the artifact.
 #
-# Under pull_request, a fork pull request gets a read-only token and no OIDC token, so this can't
-# run there. Under workflow_run it gets both, for fork pull requests too, which makes the run's
-# artifacts untrusted input to a privileged run: the pull request's code wrote them.
+# Under workflow_run this run holds a token that can write and an OIDC token, whatever started the
+# test run, which makes the run's artifacts untrusted input to a privileged run: the pull
+# request's code wrote them. Fork pull requests are left out, but the rules hold for every run.
 # - Nothing from the pull request is checked out or run. Every step runs from this file.
 # - An artifact's name must match the contract before it is used. The language and the label that
 #   are reported come from the table in the find job, never from the artifact.
@@ -82,6 +95,7 @@ jobs:
     name: Find Coverage Reports
     if: >-
       github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_repository.full_name == github.repository
       && (
         github.event.workflow_run.event == 'pull_request'
         || (
@@ -106,11 +120,10 @@ jobs:
       # The property's values come from the event payload, where a multi select is a list. They
       # and the run's head go through the environment and are only compared, never run.
       #
-      # workflow_run.pull_requests is empty for fork pull requests, so the pull request is found by
-      # its head. A head SHA alone can match several pull requests, so the head repository and
-      # branch must match too, and anything but exactly one match reports nothing rather than
-      # report on the wrong pull request. A newer push no longer matches, and its own run takes
-      # over.
+      # The pull request is found by its head. A head SHA alone can match several pull requests,
+      # so the head repository and branch must match too, and anything but exactly one match
+      # reports nothing rather than report on the wrong pull request. A newer push no longer
+      # matches, and its own run takes over.
       #
       # The table maps a language of the artifact's name to GitHub's Linguist name and DeepSource's
       # key. An artifact whose name doesn't match the contract, or names another language, is left
@@ -285,7 +298,8 @@ jobs:
   # Runs nothing from the repository; see the top. The CLI is downloaded in the version pinned at
   # the top and checked against its SHA-256 before it runs. It exchanges the job's OIDC token for
   # a DSN of this repository, and --commit names the commit, so it needs no checkout: the run's
-  # head, which DeepSource analyzes, not the merge commit a pull request's test run is on.
+  # head, which DeepSource analyzes, not the merge commit a pull request's test run is on. It runs
+  # in the workspace, which is empty here; see the top for why the directory matters.
   deepsource:
     name: Report to DeepSource
     needs: find
@@ -348,6 +362,7 @@ jobs:
           FILE: ${{ steps.report.outputs.file }}
           COMMIT: ${{ github.event.workflow_run.head_sha }}
           KEY: ${{ matrix.report.key }}
+        working-directory: ${{ github.workspace }}
         run: |
           "$RUNNER_TEMP/deepsource/deepsource" report --analyzer test-coverage --key "$KEY" \
             --value-file "$FILE" --commit "$COMMIT" --use-oidc
