@@ -10,7 +10,7 @@ name: oxfmt
 # autofix.ci identifies the run by its workflow name, which a called workflow takes from its caller,
 # so only the caller must be named `autofix.ci`. The app must also be installed in the repository
 # (https://autofix.ci/setup). It can't be an org ruleset workflow: the app needs a workflow in the
-# repository itself, so repositories get a caller from the autofix.yml template of
+# repository itself, so repositories get a caller from the oxfmt.yml template of
 # actions-fyi/.github.
 #
 # oxfmt runs in the version the repository locks in package-lock.json, so the fix matches what its
