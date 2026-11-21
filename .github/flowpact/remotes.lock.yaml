@@ -314,6 +314,17 @@ remotes:
       - github_token
       - structured_output
       - session_id
+  autofix-ci/action@v1.3.4:
+    sha: c5b2d67aa2274e7b5a18224e8171550871fc7e4a
+    kind: action
+    using: node24
+    inputs:
+      fail-fast:
+        default: 'true'
+      commit-message: {}
+      comment: {}
+    outputs:
+      - autofix_started
   ciatlas/flowpact@v0.29.2:
     sha: ba8da0230576ac246b387193588d5cdaef9361dc
     kind: action
