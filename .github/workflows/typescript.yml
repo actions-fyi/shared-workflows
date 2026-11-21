@@ -8,8 +8,6 @@ name: Test
 #   the call passes.
 # - Fixture checks .github/fixtures/typescript, a package without dependencies whose lockfile is
 #   committed: it is installed with npm ci, and its typecheck and test scripts run.
-# This repository's custom property coverage-providers is empty, so neither call reports coverage,
-# and the coverage jobs are skipped.
 on:
   pull_request:
   merge_group:
@@ -19,20 +17,16 @@ permissions: {}
 jobs:
   no-package:
     name: No Package
-    # The union of what the jobs of _typescript.yml declare; a called job can't get more.
+    # What the jobs of _typescript.yml declare; a called job can't get more.
     permissions:
       contents: read # Read package.json and the lockfile, and check the package out
-      code-quality: write # Declared by the GitHub coverage job, which doesn't run here
-      id-token: write # Declared by the DeepSource coverage job, which doesn't run here
     uses: $/.github/workflows/_typescript.yml
 
   fixture:
     name: Fixture
-    # The union of what the jobs of _typescript.yml declare; a called job can't get more.
+    # What the jobs of _typescript.yml declare; a called job can't get more.
     permissions:
       contents: read # Read package.json and the lockfile, and check the package out
-      code-quality: write # Declared by the GitHub coverage job, which doesn't run here
-      id-token: write # Declared by the DeepSource coverage job, which doesn't run here
     uses: $/.github/workflows/_typescript.yml
     with:
       working-directory: .github/fixtures/typescript

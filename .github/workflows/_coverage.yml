@@ -1,0 +1,353 @@
+name: Report Coverage
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags. It is called by a workflow_run listener in consumer
+# repositories, by full path and tag, so inside it github.event is the workflow_run payload, and
+# the token is the base repository's. This repository's own coverage.yml calls it with `$/`.
+#
+# The caller's trigger: workflow_run on the test workflows, completed. So github.event.workflow_run
+# is a test run, of any language: _typescript.yml today.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# It reports the coverage of that run where the repository's custom property coverage-providers, a
+# multi select, names a provider. Without the property, nothing below the find job runs.
+# - github: GitHub Code Quality, through the API that actions/upload-code-coverage calls. The
+#   action itself reads the commit and the pull request from a pull_request or push event, which
+#   this run isn't. Code Quality must be enabled in the repository.
+# - deepsource: DeepSource, with its CLI and the job's OIDC token, so there is no DSN secret. The
+#   repository must be activated on DeepSource, with the test-coverage analyzer enabled.
+#
+# Coverage is reported for a test run that passed, on a pull request or on a push to the default
+# branch, against the run's head commit. Merge groups aren't reported: neither provider shows
+# their commits. A pull request's report is measured on its merge with the base branch, which is
+# what the test run checks out, so a line can be off where the base branch moved since.
+#
+# The artifact's contract, which the check of every language follows:
+# - Its name is coverage.<language>, or coverage.<language>.<package> for a second package in the
+#   repository. The language is one of the words the find job knows; add one there for a new
+#   language. The package is letters, digits, _ and -.
+# - It holds cobertura.xml, a Cobertura XML report, which GitHub accepts nothing else than, and
+#   which DeepSource reads for most languages.
+# - Where DeepSource doesn't read Cobertura for the language, as for Go, it also holds
+#   deepsource.report, in a format DeepSource reads, which is then sent to DeepSource instead.
+# Other artifacts of the run are ignored, and so are other files in the artifact.
+#
+# Under pull_request, a fork pull request gets a read-only token and no OIDC token, so this can't
+# run there. Under workflow_run it gets both, for fork pull requests too, which makes the run's
+# artifacts untrusted input to a privileged run: the pull request's code wrote them.
+# - Nothing from the pull request is checked out or run. Every step runs from this file.
+# - An artifact's name must match the contract before it is used. The language and the label that
+#   are reported come from the table in the find job, never from the artifact.
+# - The commit and the pull request come from the event and the API, never from the artifact, so
+#   a pull request can only report coverage for itself.
+# - Of an artifact, only the files the contract names are read, and only as regular files up to
+#   MAX_REPORT_BYTES. They are sent as they are: nothing here parses them or prints from them.
+# So a pull request can report false coverage for itself, as it can by changing its tests, and no
+# more. Coverage must not gate a merge on the strength of these reports.
+#
+# Where the egress firewall enforces, the repository's .github/egress-firewall.yaml must allow
+# cli.deepsource.com and app.deepsource.com for the deepsource provider. The github provider only
+# reaches api.github.com.
+#
+# The calling job must grant the union of what the jobs below declare, or the call fails before
+# anything runs:
+#   actions: read        # find: list the run's artifacts; github, deepsource: download them
+#   contents: read       # all jobs: let the egress firewall read its policy
+#   pull-requests: read  # find: find the pull request of the run
+#   code-quality: write  # github: upload the coverage reports to GitHub Code Quality
+#   id-token: write      # deepsource: exchange the job's OIDC token with DeepSource
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  # The DeepSource CLI, from https://cli.deepsource.com/manifest.json: its version and the SHA-256
+  # of deepsource_<version>_linux_amd64.tar.gz. Renovate has no datasource for it, so update the
+  # two together by hand.
+  DEEPSOURCE_CLI_VERSION: 2.0.57
+  DEEPSOURCE_CLI_SHA256: 7a22daa62328fde38e275674ed0b52b780b2ac48f4af8f1b92eff0a347b81ab0
+  # A report file larger than this isn't reported.
+  MAX_REPORT_BYTES: 52428800
+  # No more reports than this are taken from one run.
+  MAX_REPORTS: 20
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Decides what this run reports: for which providers, which artifacts, and on which pull request.
+  find:
+    name: Find Coverage Reports
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && (
+        github.event.workflow_run.event == 'pull_request'
+        || (
+          github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_branch == github.event.repository.default_branch
+        )
+      )
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 5
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+      actions: read # List the run's artifacts
+      pull-requests: read # Find the pull request
+    outputs:
+      github: ${{ steps.find.outputs.github }}
+      deepsource: ${{ steps.find.outputs.deepsource }}
+      # A JSON list of {artifact, language, key, label}; empty when there is nothing to report.
+      reports: ${{ steps.find.outputs.reports }}
+      # The pull request's number, or empty on the default branch.
+      number: ${{ steps.find.outputs.number }}
+    steps:
+      # The property's values come from the event payload, where a multi select is a list. They
+      # and the run's head go through the environment and are only compared, never run.
+      #
+      # workflow_run.pull_requests is empty for fork pull requests, so the pull request is found by
+      # its head. A head SHA alone can match several pull requests, so the head repository and
+      # branch must match too, and anything but exactly one match reports nothing rather than
+      # report on the wrong pull request. A newer push no longer matches, and its own run takes
+      # over.
+      #
+      # The table maps a language of the artifact's name to GitHub's Linguist name and DeepSource's
+      # key. An artifact whose name doesn't match the contract, or names another language, is left
+      # out, and only counted: its name is the pull request's text.
+      - name: Find Coverage Reports
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVIDERS: ${{ toJSON(github.event.repository.custom_properties['coverage-providers']) }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          github=false
+          deepsource=false
+          while IFS= read -r provider; do
+            case "$provider" in
+              github) github=true ;;
+              deepsource) deepsource=true ;;
+              *) echo "::warning::The custom property coverage-providers names $provider, which this workflow doesn't know. It knows github and deepsource." ;;
+            esac
+          done < <(jq -r 'if type == "array" then .[] elif type == "string" then . else empty end | tostring' <<< "$PROVIDERS")
+          {
+            echo "github=$github"
+            echo "deepsource=$deepsource"
+            echo "reports=[]"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "$github" == false && "$deepsource" == false ]]; then
+            echo "::notice::The custom property coverage-providers names no provider, so nothing is reported."
+            exit 0
+          fi
+
+          reports="$(gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            | jq -s -c --argjson max "$MAX_REPORTS" '
+              {
+                typescript: {language: "TypeScript", key: "javascript"},
+                javascript: {language: "JavaScript", key: "javascript"},
+                python: {language: "Python", key: "python"},
+                go: {language: "Go", key: "go"},
+                rust: {language: "Rust", key: "rust"},
+                java: {language: "Java", key: "java"},
+                kotlin: {language: "Kotlin", key: "kotlin"},
+                scala: {language: "Scala", key: "scala"},
+                ruby: {language: "Ruby", key: "ruby"},
+                php: {language: "PHP", key: "php"},
+                csharp: {language: "C#", key: "csharp"},
+                swift: {language: "Swift", key: "swift"},
+                c: {language: "C", key: "cxx"},
+                cpp: {language: "C++", key: "cxx"}
+              } as $languages
+              | [.[].artifacts[] | select(.expired | not) | .name | select(startswith("coverage."))]
+              | unique as $names
+              | [
+                  $names[]
+                  | . as $name
+                  | (capture("^coverage\\.(?<id>[a-z]+)(\\.(?<package>[A-Za-z0-9_-]+))?$") // null) as $match
+                  | select($match != null and $languages[$match.id] != null)
+                  | $languages[$match.id] + {
+                      artifact: $name,
+                      label: ("code-coverage/" + $match.id + (if $match.package then "-" + $match.package else "" end))
+                    }
+                ] as $reports
+              | {reports: $reports[:$max], ignored: (($names | length) - ($reports[:$max] | length))}')"
+          ignored="$(jq -r '.ignored' <<< "$reports")"
+          reports="$(jq -c '.reports' <<< "$reports")"
+          if (( ignored > 0 )); then
+            echo "::warning::$ignored coverage artifacts of the run are left out: their names don't follow the contract of _coverage.yml, or there are more than $MAX_REPORTS."
+          fi
+          if [[ "$reports" == "[]" ]]; then
+            echo "::notice::The run handed on no coverage report, so nothing is reported."
+            exit 0
+          fi
+
+          if [[ "$RUN_EVENT" == pull_request ]]; then
+            numbers="$(gh api --paginate "repos/$REPOSITORY/pulls?state=open&per_page=100" \
+              | jq -s -c --arg sha "$HEAD_SHA" --arg repository "$HEAD_REPOSITORY" --arg ref "$HEAD_BRANCH" \
+                '[.[][] | select(.head.sha == $sha and .head.repo.full_name == $repository and .head.ref == $ref) | .number]')"
+            count="$(jq 'length' <<< "$numbers")"
+            if (( count != 1 )); then
+              echo "::notice::$count open pull requests match the head of the run, so nothing is reported."
+              exit 0
+            fi
+            echo "number=$(jq '.[0]' <<< "$numbers")" >> "$GITHUB_OUTPUT"
+          fi
+          echo "reports=$reports" >> "$GITHUB_OUTPUT"
+
+  # Runs nothing from the repository; see the top. The artifact's name passed the contract in the
+  # find job, and its file is checked before it is sent. GitHub processes the report after the
+  # upload, so the job waits for the result, and fails when GitHub rejects the report.
+  github:
+    name: Report to GitHub
+    needs: find
+    if: needs.find.outputs.github == 'true' && needs.find.outputs.reports != '[]'
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        report: ${{ fromJSON(needs.find.outputs.reports) }}
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+      actions: read # Download the coverage report of the test run
+      code-quality: write # Upload the coverage report to GitHub Code Quality
+    steps:
+      - name: Download Coverage Report
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: ${{ matrix.report.artifact }}
+          path: ${{ runner.temp }}/coverage
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Check Coverage Report
+        id: report
+        run: |
+          file="$RUNNER_TEMP/coverage/cobertura.xml"
+          if [[ ! -e "$file" && ! -L "$file" ]]; then
+            echo "::notice::The artifact holds no cobertura.xml, so nothing is reported to GitHub."
+            exit 0
+          fi
+          if [[ -L "$file" || ! -f "$file" ]]; then
+            echo "::error::cobertura.xml isn't a regular file."
+            exit 1
+          fi
+          if (( $(stat --format %s "$file") > MAX_REPORT_BYTES )); then
+            echo "::error::cobertura.xml is larger than $MAX_REPORT_BYTES bytes."
+            exit 1
+          fi
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+      - name: Report Coverage
+        if: steps.report.outputs.file != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          FILE: ${{ steps.report.outputs.file }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+          NUMBER: ${{ needs.find.outputs.number }}
+          REF: refs/heads/${{ github.event.repository.default_branch }}
+          LANGUAGE: ${{ matrix.report.language }}
+          LABEL: ${{ matrix.report.label }}
+        run: |
+          gzip --stdout "$FILE" | base64 --wrap 0 > "$RUNNER_TEMP/report.b64"
+          jq -n --rawfile report "$RUNNER_TEMP/report.b64" --arg commit "$COMMIT" \
+            --arg language "$LANGUAGE" --arg label "$LABEL" --arg number "$NUMBER" --arg ref "$REF" \
+            '{commit_oid: $commit, coverage_report: $report, language_name: $language, label: $label}
+              + (if $number != "" then {pull_request_number: ($number | tonumber)} else {ref: $ref} end)' \
+            > "$RUNNER_TEMP/payload.json"
+          response="$(gh api --method PUT "repos/$REPOSITORY/code-coverage/report" --input "$RUNNER_TEMP/payload.json")"
+          id="$(jq -r '.id // empty' <<< "$response")"
+          if [[ -z "$id" ]]; then
+            echo "::warning::GitHub took the coverage report but doesn't process it: $(jq -r '.message // "no reason given"' <<< "$response")"
+            exit 0
+          fi
+          for _ in {1..30}; do
+            status="$(gh api "repos/$REPOSITORY/code-coverage/reports/$id" --jq '.processing_status // ""')"
+            case "$status" in
+              succeeded)
+                echo "::notice::GitHub processed the coverage report $LABEL."
+                exit 0
+                ;;
+              failed)
+                echo "::error::GitHub couldn't process the coverage report $LABEL. Check that it is a Cobertura XML report."
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+          echo "::warning::GitHub took the coverage report $LABEL but hadn't processed it after 150 seconds."
+
+  # Runs nothing from the repository; see the top. The CLI is downloaded in the version pinned at
+  # the top and checked against its SHA-256 before it runs. It exchanges the job's OIDC token for
+  # a DSN of this repository, and --commit names the commit, so it needs no checkout: the run's
+  # head, which DeepSource analyzes, not the merge commit a pull request's test run is on.
+  deepsource:
+    name: Report to DeepSource
+    needs: find
+    if: needs.find.outputs.deepsource == 'true' && needs.find.outputs.reports != '[]'
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        report: ${{ fromJSON(needs.find.outputs.reports) }}
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+      actions: read # Download the coverage report of the test run
+      id-token: write # Exchange the job's OIDC token with DeepSource
+    steps:
+      - name: Download Coverage Report
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: ${{ matrix.report.artifact }}
+          path: ${{ runner.temp }}/coverage
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      # deepsource.report where the artifact holds one, cobertura.xml otherwise; see the contract.
+      - name: Check Coverage Report
+        id: report
+        run: |
+          file=""
+          for name in deepsource.report cobertura.xml; do
+            if [[ -e "$RUNNER_TEMP/coverage/$name" || -L "$RUNNER_TEMP/coverage/$name" ]]; then
+              file="$RUNNER_TEMP/coverage/$name"
+              break
+            fi
+          done
+          if [[ -z "$file" ]]; then
+            echo "::notice::The artifact holds neither deepsource.report nor cobertura.xml, so nothing is reported to DeepSource."
+            exit 0
+          fi
+          if [[ -L "$file" || ! -f "$file" ]]; then
+            echo "::error::${file##*/} isn't a regular file."
+            exit 1
+          fi
+          if (( $(stat --format %s "$file") > MAX_REPORT_BYTES )); then
+            echo "::error::${file##*/} is larger than $MAX_REPORT_BYTES bytes."
+            exit 1
+          fi
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+      - name: Install DeepSource CLI
+        if: steps.report.outputs.file != ''
+        run: |
+          archive="deepsource_${DEEPSOURCE_CLI_VERSION}_linux_amd64.tar.gz"
+          dir="$RUNNER_TEMP/deepsource"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$dir/$archive" "https://cli.deepsource.com/build/$archive"
+          echo "$DEEPSOURCE_CLI_SHA256  $dir/$archive" | sha256sum --check --strict
+          tar -xzf "$dir/$archive" -C "$dir" deepsource
+      - name: Report Coverage
+        if: steps.report.outputs.file != ''
+        env:
+          FILE: ${{ steps.report.outputs.file }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+          KEY: ${{ matrix.report.key }}
+        run: |
+          "$RUNNER_TEMP/deepsource/deepsource" report --analyzer test-coverage --key "$KEY" \
+            --value-file "$FILE" --commit "$COMMIT" --use-oidc
