@@ -16,8 +16,8 @@ remotes:
         default: 'false'
       dry-run:
         default: 'false'
-  actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.3.0:
-    sha: c2907d59936c2ca9a0deee0f66e136b1d7e3ea2c
+  actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.4.0:
+    sha: ab9bdf0f2634e7827c21733c692f217d18ea7613
     kind: workflow
     inputs:
       payload-fields:
