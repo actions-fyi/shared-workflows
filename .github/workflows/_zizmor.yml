@@ -71,8 +71,8 @@ jobs:
       # zizmor before 1.32 doesn't read the lockfile, so hash-pin would flag every action by tag.
       #
       # dangerous-triggers flags every workflow_run and issue_comment trigger. The org's callers
-      # of _explain.yml, _pr-metadata.yml and _claude.yml need them: they run after a pull
-      # request's checks, or on a comment, with the base branch's workflow and token. Their files,
+      # of _explain.yml, _coverage.yml, _pr-metadata.yml and _claude.yml need them: they run after
+      # a pull request's checks, or on a comment, with the base branch's workflow and token. Their files,
       # synced from actions-fyi/.github, are exempt by name; every other workflow is still audited.
       # The match is by file name only, so a repository's own workflow under one of these names is
       # exempt too, with any trigger in it. That gap is accepted.
@@ -90,6 +90,7 @@ jobs:
               ignore:
                 - actions-lock-explain.yml
                 - claude.yml
+                - coverage.yml
                 - pr-metadata.yml
           EOF
           echo "path=$config" >> "$GITHUB_OUTPUT"
