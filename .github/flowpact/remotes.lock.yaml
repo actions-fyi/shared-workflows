@@ -230,8 +230,8 @@ remotes:
       headerPattern: {}
       headerPatternCorrespondence: {}
       wip: {}
-  anthropics/claude-code-action@v1.0.284:
-    sha: c84e279f859e2591391e95bd309286eb111c345f
+  anthropics/claude-code-action@v1.0.286:
+    sha: acfe7992852970efb4fee683d63d628e3e52df67
     kind: action
     using: composite
     inputs:
