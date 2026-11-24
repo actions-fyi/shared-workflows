@@ -16,8 +16,8 @@ remotes:
         default: 'false'
       dry-run:
         default: 'false'
-  actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.4.0:
-    sha: ab9bdf0f2634e7827c21733c692f217d18ea7613
+  actions-fyi/prompt-guard-action/.github/workflows/_shared.yml@v0.5.0:
+    sha: d8283082942199e15b276dbb946470a75a4779e9
     kind: workflow
     inputs:
       payload-fields:
@@ -38,6 +38,9 @@ remotes:
       threshold:
         type: string
         default: '0.9'
+      title-threshold:
+        type: string
+        default: '0.995'
       pull-request:
         type: string
         default: ''
