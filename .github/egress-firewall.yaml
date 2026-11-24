@@ -41,5 +41,3 @@ allow:
   - tuf-repo-cdn.sigstore.dev           # TUF trust root
   - tuf-repo.github.com                 # GitHub's TUF trust root
   - tmaproduction.blob.core.windows.net # GitHub's TUF trust root storage
-  # Electron Hub: Jev, the decision model that _rerun-failed.yml asks whether a failure is transient
-  - api.electronhub.ai # the Decisions API
