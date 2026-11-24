@@ -71,9 +71,9 @@ jobs:
       # zizmor before 1.32 doesn't read the lockfile, so hash-pin would flag every action by tag.
       #
       # dangerous-triggers flags every workflow_run, issue_comment and pull_request_target
-      # trigger. The org's callers of _explain.yml, _coverage.yml, _pr-metadata.yml and _claude.yml
-      # need them: they run after a pull request's checks, or on a comment, with the base branch's
-      # workflow and token. pr-metadata.yml also runs on edited pull requests, for
+      # trigger. The org's callers of _explain.yml, _coverage.yml, _pr-metadata.yml, _claude.yml
+      # and _rerun-failed.yml need them: they run after a pull request's checks, or on a comment,
+      # with the base branch's workflow and token. pr-metadata.yml also runs on edited pull requests, for
       # _metadata-rerun.yml, which checks nothing out. Their files are exempt by name. coverage.yml comes from a workflow template of actions-fyi/.github;
       # the others are synced from it. Every other workflow is still audited.
       # The match is by file name only, so a repository's own workflow under one of these names is
@@ -94,6 +94,7 @@ jobs:
                 - claude.yml
                 - coverage.yml
                 - pr-metadata.yml
+                - rerun-failed.yml
           EOF
           echo "path=$config" >> "$GITHUB_OUTPUT"
       # advanced-security uploads the SARIF results to code scanning, which a private or internal

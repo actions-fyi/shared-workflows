@@ -1,0 +1,27 @@
+name: Re-run Failed Jobs
+# This repository's caller of its own shared workflow _rerun-failed.yml, which holds the
+# classification and the re-run; see there. A workflow_run listener runs from the default branch
+# only, so a pull request that changes _rerun-failed.yml isn't tested by it: the change runs once
+# it's merged.
+#
+# "**" matches every workflow by name, this one included, which _rerun-failed.yml skips. The file
+# must keep the name rerun-failed.yml: zizmor's dangerous-triggers audit of _zizmor.yml exempts
+# this workflow_run listener by file name.
+on:
+  workflow_run:
+    workflows: ["**"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  rerun:
+    name: Re-run Failed Jobs
+    cache-mode: none
+    # What the rerun job of _rerun-failed.yml declares; a called job can't get more.
+    permissions:
+      actions: write # Read the run's jobs and logs, and re-run its failed jobs
+      contents: read # Let the egress firewall read its policy
+    uses: $/.github/workflows/_rerun-failed.yml
+    secrets:
+      ELECTRONHUB_API_KEY: ${{ secrets.ELECTRONHUB_API_KEY }}

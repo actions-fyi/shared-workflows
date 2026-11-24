@@ -60,6 +60,8 @@ workflows:
         - 'actions/github-script@v9.0.0'
         - 'actions/upload-artifact@v7.0.2'
         - 'anthropics/claude-code-action@v1.0.286'
+    '.github/workflows/_rerun-failed.yml':
+        - 'actions/github-script@v9.0.0'
     '.github/workflows/_renovate.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
@@ -95,6 +97,7 @@ workflows:
     '.github/workflows/metadata.yml': []
     '.github/workflows/pr-metadata.yml': []
     '.github/workflows/renovate.yml': []
+    '.github/workflows/rerun-failed.yml': []
     '.github/workflows/test.yml': []
     '.github/workflows/typescript.yml': []
     '.github/workflows/zizmor.yml': []
