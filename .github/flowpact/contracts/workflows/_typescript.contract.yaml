@@ -37,6 +37,11 @@ consumers:
       - working-directory
     reads: []
   - from: .github/workflows/typescript.yml
+    job: fixture-pnpm
+    passes:
+      - working-directory
+    reads: []
+  - from: .github/workflows/typescript.yml
     job: no-package
     passes: []
     reads: []

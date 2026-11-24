@@ -568,6 +568,27 @@ remotes:
       - bun-path
       - bun-download-url
       - cache-hit
+  pnpm/action-setup@v6.1.1:
+    sha: 73e46992e05b19abd31f2f3c20e0e7370d762115
+    kind: action
+    using: node24
+    inputs:
+      version: {}
+      dest:
+        default: ~/setup-pnpm
+      run_install:
+        default: 'null'
+      cache:
+        default: 'false'
+      cache_dependency_path:
+        default: pnpm-lock.yaml
+      package_json_file:
+        default: package.json
+      standalone:
+        default: 'false'
+    outputs:
+      - dest
+      - bin_dest
   suzuki-shunsuke/github-action-renovate-config-validator@v2.4.1:
     sha: 1e1604219a6b38ae9a10aff42a28a3656322c31a
     kind: action

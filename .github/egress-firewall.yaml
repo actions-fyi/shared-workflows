@@ -21,7 +21,7 @@ allow:
   - uploads.github.com                   # CodeQL's SARIF upload
   - release-assets.githubusercontent.com # release downloads: bun, node, gh extensions, re2
   # Package registries
-  - registry.npmjs.org     # renovate-config-validator, Wrangler, and Claude Code through bun
+  - registry.npmjs.org     # renovate-config-validator, Wrangler, pnpm, and Claude Code through bun
   - pypi.org               # zizmor's install
   - files.pythonhosted.org # zizmor's install
   # Claude: the review, triage, metadata, explain and screen jobs

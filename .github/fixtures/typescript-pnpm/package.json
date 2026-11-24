@@ -1,0 +1,13 @@
+{
+  "name": "typescript-check-fixture-pnpm",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A pnpm package that pins no pnpm version, which typescript.yml checks with _typescript.yml.",
+  "scripts": {
+    "typecheck": "node --version",
+    "test": "node --eval \"require('semver')\""
+  },
+  "devDependencies": {
+    "semver": "7.8.6"
+  }
+}

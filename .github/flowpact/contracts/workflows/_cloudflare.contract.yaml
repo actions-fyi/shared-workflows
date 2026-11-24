@@ -13,11 +13,16 @@ interface:
       type: string
       required: false
       default: .
-      description: The directory of the Wrangler config, relative to the repository's root. It must hold the Wrangler config, package.json and package-lock.json.
+      description: The directory of the Wrangler config, relative to the repository's root. It must hold the Wrangler config, package.json and its package-lock.json or pnpm-lock.yaml.
   outputs: {}
 consumers:
   - from: .github/workflows/cloudflare.yml
     job: fixture
+    passes:
+      - working-directory
+    reads: []
+  - from: .github/workflows/cloudflare.yml
+    job: fixture-pnpm
     passes:
       - working-directory
     reads: []

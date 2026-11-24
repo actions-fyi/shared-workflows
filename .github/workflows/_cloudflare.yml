@@ -19,25 +19,44 @@ name: Validate
 # succeeds, because the config job does. Callers shouldn't filter by paths, because nearly any file
 # can break a bundle.
 #
-# The dry-run job installs the locked dependencies with npm ci and runs wrangler deploy --dry-run.
-# That runs the [build] command of the Wrangler config, bundles the code, reads the assets
-# directory, prints the bindings and the upload size, and exits without contacting Cloudflare. So
+# The dry-run job installs the locked dependencies, with npm ci or pnpm install --frozen-lockfile,
+# and runs wrangler deploy --dry-run, with npx --no-install or pnpm exec. That runs the [build]
+# command of the Wrangler config, bundles the code, reads the assets directory, prints the
+# bindings and the upload size, and exits without contacting Cloudflare. So
 # it fails on a config that doesn't parse, a missing entry point, and code that doesn't bundle.
 # It doesn't verify that the KV namespaces, queues or account IDs the config names exist: that needs
 # a Cloudflare token, which this workflow must never hold.
 #
 # Limits of this version:
-# - npm only. The working directory must hold a package.json and a package-lock.json; a project
-#   that uses another package manager fails with an error that says so.
+# - npm and pnpm only. The working directory must hold a package.json and its package-lock.json
+#   or pnpm-lock.yaml. The packageManager field of package.json names the manager, and the lockfile
+#   does when the field is missing; a project that uses another package manager fails with an
+#   error that says so.
 # - Wrangler must be a locked dependency of that package, in devDependencies. It is never installed
 #   ad hoc: an unpinned Wrangler would run with whatever the job holds, and its version would
-#   change between runs.
+#   change between runs. For npm the config job finds it in package-lock.json. For pnpm it finds it
+#   in package.json, and the frozen install fails when pnpm-lock.yaml doesn't lock what
+#   package.json declares.
 # - Only the Wrangler config in the working directory is validated, with its default environment.
+#
+# pnpm comes from pnpm/action-setup, set up after Node.js, in the version that packageManager or
+# devEngines.packageManager of package.json pins, and in PNPM_VERSION below when neither does; see
+# _typescript.yml, which sets it up the same way. pnpm 11 and later fail the install when a
+# dependency has a build script that allowBuilds of pnpm-workspace.yaml neither allows nor denies,
+# so a project decides each one there, Wrangler's esbuild and workerd among them. A dry run needs
+# neither of those two to run, so denying them is enough; see the pnpm fixture.
 #
 # The dry-run job runs the repository's code: install scripts of its dependencies, and the build
 # command, all of which a pull request, a Renovate update among them, can change. So it holds a
-# read-only token, takes no secrets, checks out without persisting credentials, and restores and
-# saves no cache. It is never given CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID.
+# read-only token, takes no secrets, and checks out without persisting credentials. It is never
+# given CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID.
+#
+# The install is cached in the Actions cache, keyed on the lockfile's hash, and saved when the key
+# missed: npm's cache directory by setup-node, and pnpm's store, pruned, by pnpm/action-setup; see
+# _typescript.yml, which caches them the same way. GitHub scopes a cache to the ref that saved it: a
+# pull request's later pushes and re-runs reuse its cache, and a cache saved by a pull request's
+# code never reaches another pull request or a branch. A push to the default branch saves a cache
+# every pull request can read, from code that was already merged.
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
@@ -49,12 +68,17 @@ on:
       working-directory:
         description: >-
           The directory of the Wrangler config, relative to the repository's root. It must hold the
-          Wrangler config, package.json and package-lock.json.
+          Wrangler config, package.json and its package-lock.json or pnpm-lock.yaml.
         type: string
         required: false
         default: .
 
 permissions: {}
+
+env:
+  # The pnpm of a package that pins none in packageManager or devEngines.packageManager.
+  # renovate: datasource=npm depName=pnpm
+  PNPM_VERSION: 12.23.0
 
 defaults:
   run:
@@ -69,6 +93,10 @@ jobs:
       contents: read # Read the Wrangler config, package.json and the lockfile
     outputs:
       found: ${{ steps.config.outputs.found }}
+      manager: ${{ steps.config.outputs.manager }}
+      lockfile: ${{ steps.config.outputs.lockfile }}
+      package-json: ${{ steps.config.outputs.package-json }}
+      pnpm-version: ${{ steps.config.outputs.pnpm-version }}
       node-version: ${{ steps.config.outputs.node-version }}
       node-version-file: ${{ steps.config.outputs.node-version-file }}
     steps:
@@ -106,19 +134,56 @@ jobs:
           fi
 
           [[ -f package.json ]] \
-            || fail "There's a $config in $where, but no package.json next to it. Add one that lists wrangler in devDependencies, and commit its package-lock.json."
+            || fail "There's a $config in $where, but no package.json next to it. Add one that lists wrangler in devDependencies, and commit its lockfile."
           jq -e 'type == "object"' package.json > /dev/null \
             || fail "package.json isn't a JSON object."
-          [[ -f package-lock.json ]] \
-            || fail "There's no package-lock.json in $where. This workflow supports only npm, and installs only from its lockfile. Commit package-lock.json."
-          # packages is the lockfile format of npm 7 and later, dependencies the one before.
-          jq -e '(.packages["node_modules/wrangler"] // .dependencies.wrangler) | type == "object"' \
-            package-lock.json > /dev/null \
-            || fail "wrangler isn't a locked dependency of the package in $where. Add wrangler to devDependencies in package.json and commit the updated package-lock.json. Wrangler is never installed on its own."
 
-          # setup-node reads a version file relative to the repository's root.
+          # packageManager is "<name>@<version>", optionally with a hash. Without it, the lockfile
+          # tells, npm's first when a package has both.
+          manager="$(jq -r '(.packageManager // "") | tostring | split("@")[0] // ""' package.json)"
+          if [[ -z "$manager" ]]; then
+            if [[ -f package-lock.json ]]; then
+              manager=npm
+            elif [[ -f pnpm-lock.yaml ]]; then
+              manager=pnpm
+            else
+              fail "There's no package-lock.json or pnpm-lock.yaml in $where. This workflow supports npm and pnpm, and installs only from the lockfile. Commit the lockfile."
+            fi
+          fi
+          case "$manager" in
+            npm) lockfile=package-lock.json ;;
+            pnpm) lockfile=pnpm-lock.yaml ;;
+            *) fail "package.json names the package manager $manager, which this workflow doesn't support. It supports npm and pnpm." ;;
+          esac
+          [[ -f "$lockfile" ]] \
+            || fail "There's no $lockfile in $where. This workflow installs only from the lockfile. Commit $lockfile."
+          missing="wrangler isn't a locked dependency of the package in $where. Add wrangler to devDependencies in package.json and commit the updated $lockfile. Wrangler is never installed on its own."
+          if [[ "$manager" == npm ]]; then
+            # packages is the lockfile format of npm 7 and later, dependencies the one before.
+            jq -e '(.packages["node_modules/wrangler"] // .dependencies.wrangler) | type == "object"' \
+              package-lock.json > /dev/null || fail "$missing"
+          else
+            # The frozen install fails when pnpm-lock.yaml doesn't lock what package.json declares.
+            jq -e '(.devDependencies.wrangler // .dependencies.wrangler) | type == "string"' \
+              package.json > /dev/null || fail "$missing"
+          fi
+
+          # setup-node and pnpm/action-setup read files relative to the repository's root.
           prefix="${WORKING_DIRECTORY%/}/"
           [[ "$prefix" == "./" ]] && prefix=""
+
+          # pnpm/action-setup reads the version from package.json, the way pnpm does, and fails
+          # when it's also given one that differs. So it's given PNPM_VERSION only when package.json
+          # pins none.
+          pnpm_version=""
+          if [[ "$manager" == pnpm ]] && ! jq -e '
+              ((.packageManager // "") | tostring | startswith("pnpm@"))
+              or ((.devEngines.packageManager // null) | objects
+                | .name == "pnpm" and ((.version // "") | tostring | length > 0))' \
+              package.json > /dev/null; then
+            pnpm_version="$PNPM_VERSION"
+            echo "::notice::package.json doesn't pin a pnpm version, so pnpm $pnpm_version is used. Pin one in its packageManager field, so the dry run uses the pnpm you develop with."
+          fi
           node_version=""
           node_version_file=""
           if [[ -f .nvmrc ]]; then
@@ -133,10 +198,14 @@ jobs:
 
           {
             echo "found=true"
+            echo "manager=$manager"
+            echo "lockfile=$prefix$lockfile"
+            echo "package-json=${prefix}package.json"
+            echo "pnpm-version=$pnpm_version"
             echo "node-version=$node_version"
             echo "node-version-file=$node_version_file"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::Dry-running the deployment in $where, configured by $config."
+          echo "::notice::Dry-running the deployment in $where, configured by $config, with $manager."
 
   dry-run:
     name: Dry Run
@@ -157,31 +226,61 @@ jobs:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
+    env:
+      MANAGER: ${{ needs.config.outputs.manager }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # No cache; see the top. setup-node would otherwise cache npm's when packageManager names it.
+      # Caches ~/.npm for npm; see the top. Automatic caching stays off, so the cache input alone
+      # decides. pnpm's store is cached by pnpm/action-setup.
       - name: Set Up Node.js
         uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ needs.config.outputs.node-version }}
           node-version-file: ${{ needs.config.outputs.node-version-file }}
           package-manager-cache: false
+          cache: ${{ needs.config.outputs.manager == 'npm' && 'npm' || '' }}
+          cache-dependency-path: ${{ needs.config.outputs.lockfile }}
+      # After Node.js, so pnpm 11 and earlier run on the project's Node.js. An empty version makes
+      # the action read the one package.json pins. The cache is restored here and saved in the
+      # action's post step.
+      - name: Set Up pnpm
+        if: needs.config.outputs.manager == 'pnpm'
+        uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ needs.config.outputs.pnpm-version }}
+          package_json_file: ${{ needs.config.outputs.package-json }}
+          cache: true
+          cache_dependency_path: ${{ needs.config.outputs.lockfile }}
       - name: Install Dependencies
-        run: npm ci
-      # --no-install makes npx run only the Wrangler that npm ci installed from the lockfile, and
-      # fail when there is none. No Cloudflare credentials are set, and none are needed: a dry run
-      # doesn't contact Cloudflare. The bundle is written outside the checkout and thrown away.
+        run: |
+          case "$MANAGER" in
+            npm) npm ci ;;
+            pnpm) pnpm install --frozen-lockfile ;;
+          esac
+      # Drops what the restored store holds but this install doesn't reference, before the post
+      # step of pnpm/action-setup saves it. The action only prunes when it ran the install itself.
+      - name: Prune pnpm Store
+        if: needs.config.outputs.manager == 'pnpm'
+        run: pnpm store prune
+      # npx --no-install and pnpm exec run only the Wrangler that the install put in node_modules
+      # from the lockfile, and fail when there is none. No Cloudflare credentials are set, and none
+      # are needed: a dry run doesn't contact Cloudflare. The bundle is written outside the checkout
+      # and thrown away.
       - name: Dry-Run the Deployment
         env:
           WRANGLER_SEND_METRICS: "false" # No usage metrics to Cloudflare
           FORCE_COLOR: "0" # Plain output, so the upload size can be read from it
         run: |
           log="$RUNNER_TEMP/wrangler-dry-run.log"
-          npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-dry-run" 2>&1 \
-            | tee "$log"
+          if [[ "$MANAGER" == pnpm ]]; then
+            run=(pnpm exec wrangler)
+          else
+            run=(npx --no-install wrangler)
+          fi
+          "${run[@]}" deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-dry-run" 2>&1 | tee "$log"
           # Only a line of this exact shape reaches the summary, never other output of the build.
           size="$(grep -m 1 -oE 'Total Upload: [0-9.]+ [A-Za-z]+ / gzip: [0-9.]+ [A-Za-z]+' "$log" || true)"
           {
