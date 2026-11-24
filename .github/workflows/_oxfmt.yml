@@ -18,9 +18,9 @@ name: oxfmt
 # manager, npm or pnpm, and the lockfile does when the field is missing. The install skips
 # lifecycle scripts: only oxfmt's binary is needed. pnpm comes from pnpm/action-setup, set up after
 # Node.js, in the version package.json pins, and in PNPM_VERSION below when it pins none; see
-# _typescript.yml, which sets it up the same way. Its store is cached the same way too: restored
-# from the Actions cache, keyed on the lockfile's hash, and saved, pruned, when the key missed, in
-# the pull request's own scope. npm restores and saves no cache.
+# _typescript.yml, which sets it up the same way. The install is cached the same way too, in the
+# Actions cache, keyed on the lockfile's hash, in the pull request's own scope: npm's cache
+# directory by setup-node, and pnpm's store, pruned, by pnpm/action-setup.
 #
 # autofix-ci/action refuses a diff that touches .github/ ("not allowed to modify the .github
 # directory"), and oxfmt formats the YAML there too. So oxfmt's changes under .github/ are discarded
@@ -74,9 +74,12 @@ jobs:
             fi
           fi
           case "$manager" in
-            npm | pnpm) ;;
+            npm) lockfile=package-lock.json ;;
+            pnpm) lockfile=pnpm-lock.yaml ;;
             *) fail "package.json names the package manager $manager, which this workflow doesn't support. It supports npm and pnpm." ;;
           esac
+          [[ -f "$lockfile" ]] \
+            || fail "There's no $lockfile in the repository's root. oxfmt runs only in the version a lockfile locks. Commit $lockfile."
           # pnpm/action-setup reads the version from package.json and fails when it's also given
           # one that differs, so it's given PNPM_VERSION only when package.json pins none.
           pnpm_version=""
@@ -89,6 +92,7 @@ jobs:
           fi
           {
             echo "manager=$manager"
+            echo "lockfile=$lockfile"
             echo "pnpm-version=$pnpm_version"
           } >> "$GITHUB_OUTPUT"
       - name: Set Up Node.js
@@ -96,6 +100,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
+          # Caches ~/.npm for npm; pnpm's store is cached by pnpm/action-setup.
+          cache: ${{ steps.manager.outputs.manager == 'npm' && 'npm' || '' }}
+          cache-dependency-path: ${{ steps.manager.outputs.lockfile }}
       # After Node.js, so pnpm 11 and earlier run on the repository's Node.js. An empty version
       # makes the action read the one package.json pins.
       - name: Set Up pnpm

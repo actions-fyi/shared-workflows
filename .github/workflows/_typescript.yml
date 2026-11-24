@@ -53,15 +53,21 @@ name: Test
 # scripts, all of which a pull request, a Renovate update among them, can change. So it holds a
 # read-only token and no secrets, and checks out without persisting credentials.
 #
-# For pnpm, pnpm/action-setup restores pnpm's store from the Actions cache before the install, keyed
-# on the lockfile's hash and falling back to the newest store of the same runner OS and
-# architecture, and saves it in its post step when the key missed. The store is pruned to what the
-# install references before that. GitHub scopes a cache to the ref that saved it, and a run reads
-# only its own ref's caches and those of the base and default branches: a pull request's later
-# pushes and re-runs reuse its store, and a store saved by a pull request's code never reaches
-# another pull request or a branch. pnpm also re-hashes each file it links from the store, and
-# fetches a file whose content no longer matches again. npm, Yarn and Bun restore and save no
-# cache.
+# npm and pnpm installs are cached in the Actions cache, keyed on the lockfile's hash, and saved in
+# the post step of the action that restored them when the key missed:
+# - For npm, setup-node caches npm's cache directory, ~/.npm, only on an exact key match. Besides
+#   the tarballs it holds the registry's responses to npm audit signatures: the provenance
+#   attestations are cacheable for a year and aren't fetched again, but each package's metadata
+#   only for five minutes, so the signature check still asks the registry for that on every run.
+# - For pnpm, pnpm/action-setup caches pnpm's store, falling back to the newest store of the same
+#   runner OS and architecture. The store is pruned to what the install references before it's
+#   saved. pnpm audit signatures reads nothing from it and asks the registry on every run.
+# GitHub scopes a cache to the ref that saved it, and a run reads only its own ref's caches and
+# those of the base and default branches: a pull request's later pushes and re-runs reuse its
+# cache, and a cache saved by a pull request's code never reaches another pull request or a
+# branch. npm ci checks every tarball against its integrity hash in the lockfile, and pnpm
+# re-hashes each file it links from the store, so a tampered entry isn't installed. Yarn and Bun
+# restore and save no cache of dependencies; setup-bun caches only the Bun executable.
 #
 # Coverage isn't reported here, because that takes a token that can write, which this run must
 # not hold. Where the package's scripts write a Cobertura XML coverage report to the path of the
@@ -275,14 +281,19 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # setup-node caches nothing, and would otherwise cache npm's when packageManager names it.
-      # pnpm's store is cached by pnpm/action-setup; see the top.
+      # Caches ~/.npm for npm, when there's a lockfile to key it on; see the top. Automatic caching
+      # stays off, so the cache input alone decides: it would fail a package whose packageManager
+      # names npm but that has no lockfile. pnpm's store is cached by pnpm/action-setup.
       - name: Set Up Node.js
         uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ needs.project.outputs.node-version }}
           node-version-file: ${{ needs.project.outputs.node-version-file }}
           package-manager-cache: false
+          cache: >-
+            ${{ needs.project.outputs.manager == 'npm' && needs.project.outputs.install == 'true'
+            && 'npm' || '' }}
+          cache-dependency-path: ${{ needs.project.outputs.lockfile }}
       - name: Set Up Bun
         if: needs.project.outputs.manager == 'bun'
         uses: oven-sh/setup-bun@v2.2.0

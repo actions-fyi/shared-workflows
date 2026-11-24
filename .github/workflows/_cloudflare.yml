@@ -51,11 +51,12 @@ name: Validate
 # read-only token, takes no secrets, and checks out without persisting credentials. It is never
 # given CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID.
 #
-# For pnpm, pnpm/action-setup restores pnpm's store from the Actions cache, keyed on the lockfile's
-# hash, and saves it, pruned, when the key missed. GitHub scopes a cache to the ref that saved it: a
-# pull request's later pushes and re-runs reuse its store, and a store saved by a pull request's
-# code never reaches another pull request or a branch. A push to the default branch saves a store
-# every pull request can read, from code that was already merged. npm restores and saves no cache.
+# The install is cached in the Actions cache, keyed on the lockfile's hash, and saved when the key
+# missed: npm's cache directory by setup-node, and pnpm's store, pruned, by pnpm/action-setup; see
+# _typescript.yml, which caches them the same way. GitHub scopes a cache to the ref that saved it: a
+# pull request's later pushes and re-runs reuse its cache, and a cache saved by a pull request's
+# code never reaches another pull request or a branch. A push to the default branch saves a cache
+# every pull request can read, from code that was already merged.
 #
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
@@ -232,14 +233,16 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # setup-node caches nothing, and would otherwise cache npm's when packageManager names it.
-      # pnpm's store is cached by pnpm/action-setup; see the top.
+      # Caches ~/.npm for npm; see the top. Automatic caching stays off, so the cache input alone
+      # decides. pnpm's store is cached by pnpm/action-setup.
       - name: Set Up Node.js
         uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ needs.config.outputs.node-version }}
           node-version-file: ${{ needs.config.outputs.node-version-file }}
           package-manager-cache: false
+          cache: ${{ needs.config.outputs.manager == 'npm' && 'npm' || '' }}
+          cache-dependency-path: ${{ needs.config.outputs.lockfile }}
       # After Node.js, so pnpm 11 and earlier run on the project's Node.js. An empty version makes
       # the action read the one package.json pins. The cache is restored here and saved in the
       # action's post step.
