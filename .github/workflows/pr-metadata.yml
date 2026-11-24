@@ -4,16 +4,23 @@ name: PR Metadata
 # workflow_run trigger matches workflows by name, not by file, so that workflow keeps a full name
 # of its own instead of the bare Lint. "Check Metadata" is its old name, which branches cut before
 # the rename still run under; remove it once those are gone.
+#
+# A title edit starts no run of Lint Metadata, so the same listener also runs on edited pull
+# requests, where the rerun job re-runs it when the title changed; see _metadata-rerun.yml. Each
+# job runs only on its own event, and the rerun job gets no secrets.
 on:
   workflow_run:
     workflows: ["Lint Metadata", "Check Metadata"]
     types: [completed]
+  pull_request_target:
+    types: [edited]
 
 permissions: {}
 
 jobs:
   metadata:
     name: Metadata
+    if: github.event_name == 'workflow_run'
     cache-mode: none
     permissions:
       actions: write # Re-run the failed Lint Metadata jobs
@@ -27,3 +34,12 @@ jobs:
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+
+  rerun:
+    name: Re-run Lint Metadata
+    if: github.event_name == 'pull_request_target'
+    # What the rerun job of _metadata-rerun.yml declares; a called job can't get more.
+    permissions:
+      actions: write # Re-run the Lint Metadata runs
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+    uses: $/.github/workflows/_metadata-rerun.yml
