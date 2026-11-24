@@ -6,6 +6,7 @@ kind: workflow
 path: .github/workflows/pr-metadata.yml
 name: PR Metadata
 triggers:
+  - pull_request_target
   - workflow_run
 interface:
   inputs: {}
@@ -18,4 +19,6 @@ calls:
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
+  - job: rerun
+    uses: .github/workflows/_metadata-rerun.yml
 consumers: []
