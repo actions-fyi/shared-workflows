@@ -38,6 +38,8 @@ jobs:
   rerun:
     name: Re-run Lint Metadata
     if: github.event_name == 'pull_request_target'
+    # A low-trust trigger: the rerun job needs no cache.
+    cache-mode: none
     # What the rerun job of _metadata-rerun.yml declares; a called job can't get more.
     permissions:
       actions: write # Re-run the Lint Metadata runs
