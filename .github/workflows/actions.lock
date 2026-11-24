@@ -47,6 +47,8 @@ workflows:
     '.github/workflows/_label-sync.yml':
         - 'actions/checkout@v7.0.1'
         - 'endbug/label-sync@v2.3.3'
+    '.github/workflows/_metadata-rerun.yml':
+        - 'actions/github-script@v9.0.0'
     '.github/workflows/_metadata.yml':
         - 'amannn/action-semantic-pull-request@v6.1.2'
     '.github/workflows/_oxfmt.yml':
