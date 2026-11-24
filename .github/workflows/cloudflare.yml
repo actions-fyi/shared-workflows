@@ -3,11 +3,15 @@ name: Validate
 # there. It calls the sibling with `$/`, so a pull request runs its own version of it. Other
 # repositories get their caller from the workflow template cloudflare.yml of actions-fyi/.github.
 #
-# This repository has no Wrangler config of its own, so the two calls test the workflow's two paths:
+# This repository has no Wrangler config of its own, so the three calls test the workflow's paths:
 # - No Config runs on the repository's root, which has no Wrangler config: the dry run is skipped
 #   and the call passes.
 # - Fixture runs on .github/fixtures/cloudflare, a minimal project with Wrangler locked in its
 #   package-lock.json: it is installed with npm ci, and its deployment is dry-run.
+# - pnpm Fixture runs on .github/fixtures/cloudflare-pnpm, the same project with Wrangler locked in
+#   its pnpm-lock.yaml and pnpm pinned in packageManager: pnpm/action-setup installs that pnpm and
+#   restores the store, pnpm install --frozen-lockfile installs it, denying the build scripts of
+#   esbuild and workerd in pnpm-workspace.yaml, and pnpm exec runs the dry run.
 on:
   pull_request:
   merge_group:
@@ -30,3 +34,12 @@ jobs:
     uses: $/.github/workflows/_cloudflare.yml
     with:
       working-directory: .github/fixtures/cloudflare
+
+  fixture-pnpm:
+    name: pnpm Fixture
+    # What the jobs of _cloudflare.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read the Wrangler config and the lockfile, and check the repository out
+    uses: $/.github/workflows/_cloudflare.yml
+    with:
+      working-directory: .github/fixtures/cloudflare-pnpm

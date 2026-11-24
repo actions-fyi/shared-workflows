@@ -13,8 +13,14 @@ name: oxfmt
 # repository itself, so repositories get a caller from the oxfmt.yml template of
 # actions-fyi/.github.
 #
-# oxfmt runs in the version the repository locks in package-lock.json, so the fix matches what its
-# format:check enforces. The install skips lifecycle scripts: only oxfmt's binary is needed.
+# oxfmt runs in the version the repository locks in package-lock.json or pnpm-lock.yaml, so the fix
+# matches what its format:check enforces. The packageManager field of package.json names the
+# manager, npm or pnpm, and the lockfile does when the field is missing. The install skips
+# lifecycle scripts: only oxfmt's binary is needed. pnpm comes from pnpm/action-setup, set up after
+# Node.js, in the version package.json pins, and in PNPM_VERSION below when it pins none; see
+# _typescript.yml, which sets it up the same way. Its store is cached the same way too: restored
+# from the Actions cache, keyed on the lockfile's hash, and saved, pruned, when the key missed, in
+# the pull request's own scope. npm restores and saves no cache.
 #
 # autofix-ci/action refuses a diff that touches .github/ ("not allowed to modify the .github
 # directory"), and oxfmt formats the YAML there too. So oxfmt's changes under .github/ are discarded
@@ -27,6 +33,11 @@ on:
   workflow_call:
 
 permissions: {}
+
+env:
+  # The pnpm of a package that pins none in packageManager or devEngines.packageManager.
+  # renovate: datasource=npm depName=pnpm
+  PNPM_VERSION: 12.23.0
 
 jobs:
   oxfmt:
@@ -43,15 +54,77 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      # Only reads files. The outputs are fixed words, never text from package.json.
+      - name: Find Package Manager
+        id: manager
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [[ -f package.json ]] || fail "There's no package.json in the repository's root."
+          manager="$(jq -r '(.packageManager // "") | tostring | split("@")[0] // ""' package.json)"
+          if [[ -z "$manager" ]]; then
+            if [[ -f package-lock.json ]]; then
+              manager=npm
+            elif [[ -f pnpm-lock.yaml ]]; then
+              manager=pnpm
+            else
+              fail "There's no package-lock.json or pnpm-lock.yaml in the repository's root. oxfmt runs only in the version a lockfile locks. Commit the lockfile."
+            fi
+          fi
+          case "$manager" in
+            npm | pnpm) ;;
+            *) fail "package.json names the package manager $manager, which this workflow doesn't support. It supports npm and pnpm." ;;
+          esac
+          # pnpm/action-setup reads the version from package.json and fails when it's also given
+          # one that differs, so it's given PNPM_VERSION only when package.json pins none.
+          pnpm_version=""
+          if [[ "$manager" == pnpm ]] && ! jq -e '
+              ((.packageManager // "") | tostring | startswith("pnpm@"))
+              or ((.devEngines.packageManager // null) | objects
+                | .name == "pnpm" and ((.version // "") | tostring | length > 0))' \
+              package.json > /dev/null; then
+            pnpm_version="$PNPM_VERSION"
+          fi
+          {
+            echo "manager=$manager"
+            echo "pnpm-version=$pnpm_version"
+          } >> "$GITHUB_OUTPUT"
       - name: Set Up Node.js
         uses: actions/setup-node@v7.1.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
+      # After Node.js, so pnpm 11 and earlier run on the repository's Node.js. An empty version
+      # makes the action read the one package.json pins.
+      - name: Set Up pnpm
+        if: steps.manager.outputs.manager == 'pnpm'
+        uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ steps.manager.outputs.pnpm-version }}
+          cache: true
       - name: Install Dependencies
-        run: npm ci --ignore-scripts
+        env:
+          MANAGER: ${{ steps.manager.outputs.manager }}
+        run: |
+          case "$MANAGER" in
+            npm) npm ci --ignore-scripts ;;
+            pnpm) pnpm install --frozen-lockfile --ignore-scripts ;;
+          esac
+      # The action only prunes the store before saving it when it ran the install itself.
+      - name: Prune pnpm Store
+        if: steps.manager.outputs.manager == 'pnpm'
+        run: pnpm store prune
       - name: Run oxfmt
-        run: npx --no-install oxfmt .
+        env:
+          MANAGER: ${{ steps.manager.outputs.manager }}
+        run: |
+          if [[ "$MANAGER" == pnpm ]]; then
+            pnpm exec oxfmt .
+          else
+            npx --no-install oxfmt .
+          fi
       # autofix.ci can't change .github/; see the top.
       - name: Drop Changes Under .github
         run: git checkout -- .github

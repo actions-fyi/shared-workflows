@@ -16,6 +16,10 @@ calls:
     uses: .github/workflows/_typescript.yml
     with:
       working-directory: .github/fixtures/typescript
+  - job: fixture-pnpm
+    uses: .github/workflows/_typescript.yml
+    with:
+      working-directory: .github/fixtures/typescript-pnpm
   - job: no-package
     uses: .github/workflows/_typescript.yml
 consumers: []

@@ -1,0 +1,4 @@
+# pnpm fails the install on a build script it isn't told to run or skip. A dry run needs neither.
+allowBuilds:
+  esbuild: false
+  workerd: false

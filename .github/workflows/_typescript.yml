@@ -11,7 +11,7 @@ name: Test
 #
 # Callers run it on pull_request and merge_group. A merge queue waits for every required check, so
 # it must also run on merge_group, where it checks the merged result. It isn't meant for pushes:
-# the gate belongs on the pull request, and nothing here is cached for a later run to reuse.
+# the gate belongs on the pull request.
 #
 # Callers can't filter by paths: a ruleset ignores paths filters, and a required check that never
 # runs would block merging. So the workflow always runs, and the project job decides whether there
@@ -26,13 +26,22 @@ name: Test
 # - Installs with the package manager the package uses, and only from its lockfile: npm ci, pnpm
 #   install --frozen-lockfile, yarn install --immutable (--frozen-lockfile for Yarn 1) or bun
 #   install --frozen-lockfile. The packageManager field of package.json names the manager, and the
-#   lockfile does when the field is missing. pnpm and Yarn come from Corepack, in the version that
-#   field pins. A package that declares dependencies but commits no lockfile fails: its installs
-#   aren't reproducible. One that declares none needs no lockfile and installs nothing.
-# - Verifies the registry signatures and provenance attestations of what npm installed, with npm
-#   audit signatures, so a package that was tampered with after publishing fails. Only npm has
-#   this; the other managers skip it. It doesn't audit for known vulnerabilities: a new advisory
-#   would fail unrelated pull requests, and Renovate and Dependabot alerts report those.
+#   lockfile does when the field is missing. A package that declares dependencies but commits no
+#   lockfile fails: its installs aren't reproducible. One that declares none needs no lockfile and
+#   installs nothing.
+# - pnpm comes from pnpm/action-setup, in the version that packageManager or
+#   devEngines.packageManager of package.json pins, and in PNPM_VERSION below when neither does.
+#   It is set up after Node.js, so pnpm 11 and earlier run on the package's Node.js; the action
+#   switches to the self-contained @pnpm/exe when that Node.js is too old for pnpm, and pnpm 12 is a
+#   native binary either way. The dependencies are installed by the step below, not by the action's
+#   run_install, so every manager installs with the same frozen-lockfile flags. Yarn comes from
+#   Corepack, in the version packageManager pins.
+# - Verifies the registry signatures of what was installed, so a package that was tampered with
+#   after publishing fails: npm audit signatures for npm, which also verifies provenance
+#   attestations, and pnpm audit signatures for pnpm 11 and later, which verifies the signatures
+#   only. pnpm 10 and earlier have no such command, so the step skips them with a warning; Yarn and
+#   Bun skip it. It doesn't audit for known vulnerabilities: a new advisory would fail unrelated
+#   pull requests, and Renovate and Dependabot alerts report those.
 # - Runs each script of the scripts input that package.json defines, in the given order, and skips
 #   the ones it doesn't. Every script runs even after one failed, so a pull request sees all its
 #   failures at once; the job summary lists each result, and each failure is an error annotation.
@@ -42,8 +51,17 @@ name: Test
 #
 # The check job runs the repository's code: install scripts of its dependencies, and its own
 # scripts, all of which a pull request, a Renovate update among them, can change. So it holds a
-# read-only token and no secrets, checks out without persisting credentials, and restores and saves
-# no cache: a cache written by a pull request's run would only ever be read by that pull request.
+# read-only token and no secrets, and checks out without persisting credentials.
+#
+# For pnpm, pnpm/action-setup restores pnpm's store from the Actions cache before the install, keyed
+# on the lockfile's hash and falling back to the newest store of the same runner OS and
+# architecture, and saves it in its post step when the key missed. The store is pruned to what the
+# install references before that. GitHub scopes a cache to the ref that saved it, and a run reads
+# only its own ref's caches and those of the base and default branches: a pull request's later
+# pushes and re-runs reuse its store, and a store saved by a pull request's code never reaches
+# another pull request or a branch. pnpm also re-hashes each file it links from the store, and
+# fetches a file whose content no longer matches again. npm, Yarn and Bun restore and save no
+# cache.
 #
 # Coverage isn't reported here, because that takes a token that can write, which this run must
 # not hold. Where the package's scripts write a Cobertura XML coverage report to the path of the
@@ -93,6 +111,9 @@ env:
   # Only installed where Node.js doesn't ship Corepack; see the Enable Corepack step.
   # renovate: datasource=npm depName=corepack
   COREPACK_VERSION: 0.36.0
+  # The pnpm of a package that pins none in packageManager or devEngines.packageManager.
+  # renovate: datasource=npm depName=pnpm
+  PNPM_VERSION: 12.23.0
 
 defaults:
   run:
@@ -109,6 +130,9 @@ jobs:
       check: ${{ steps.project.outputs.check }}
       manager: ${{ steps.project.outputs.manager }}
       install: ${{ steps.project.outputs.install }}
+      lockfile: ${{ steps.project.outputs.lockfile }}
+      package-json: ${{ steps.project.outputs.package-json }}
+      pnpm-version: ${{ steps.project.outputs.pnpm-version }}
       node-version: ${{ steps.project.outputs.node-version }}
       node-version-file: ${{ steps.project.outputs.node-version-file }}
     steps:
@@ -185,9 +209,23 @@ jobs:
             install=false
           fi
 
-          # setup-node reads a version file relative to the repository's root.
+          # setup-node and pnpm/action-setup read files relative to the repository's root.
           prefix="${WORKING_DIRECTORY%/}/"
           [[ "$prefix" == "./" ]] && prefix=""
+
+          # pnpm/action-setup reads the version from package.json, the way pnpm does, and fails
+          # when it's also given one that differs. So it's given PNPM_VERSION only when package.json
+          # pins none.
+          pnpm_version=""
+          if [[ "$manager" == pnpm ]] && ! jq -e '
+              ((.packageManager // "") | tostring | startswith("pnpm@"))
+              or ((.devEngines.packageManager // null) | objects
+                | .name == "pnpm" and ((.version // "") | tostring | length > 0))' \
+              package.json > /dev/null; then
+            pnpm_version="$PNPM_VERSION"
+            echo "::notice::package.json doesn't pin a pnpm version, so pnpm $pnpm_version is used. Pin one in its packageManager field, so the check runs the pnpm you develop with."
+          fi
+
           node_version=""
           node_version_file=""
           if [[ -f .nvmrc ]]; then
@@ -204,6 +242,9 @@ jobs:
             echo "check=true"
             echo "manager=$manager"
             echo "install=$install"
+            echo "lockfile=${lockfile:+$prefix$lockfile}"
+            echo "package-json=${prefix}package.json"
+            echo "pnpm-version=$pnpm_version"
             echo "node-version=$node_version"
             echo "node-version-file=$node_version_file"
           } >> "$GITHUB_OUTPUT"
@@ -234,7 +275,8 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # No cache; see the top. setup-node would otherwise cache npm's when packageManager names it.
+      # setup-node caches nothing, and would otherwise cache npm's when packageManager names it.
+      # pnpm's store is cached by pnpm/action-setup; see the top.
       - name: Set Up Node.js
         uses: actions/setup-node@v7.1.0
         with:
@@ -244,11 +286,22 @@ jobs:
       - name: Set Up Bun
         if: needs.project.outputs.manager == 'bun'
         uses: oven-sh/setup-bun@v2.2.0
-      # Corepack provides pnpm and Yarn in the version packageManager pins, or its own default
-      # without one. Node.js 25 and later no longer ship it, so it's installed there, in the
-      # version pinned at the top, which Renovate updates.
+      # After Node.js, so pnpm 11 and earlier run on the package's Node.js; see the top. An empty
+      # version makes the action read the one package.json pins. The cache is restored here and
+      # saved in the action's post step; there's no lockfile to key it on when nothing is installed.
+      - name: Set Up pnpm
+        if: needs.project.outputs.manager == 'pnpm'
+        uses: pnpm/action-setup@v6.1.1
+        with:
+          version: ${{ needs.project.outputs.pnpm-version }}
+          package_json_file: ${{ needs.project.outputs.package-json }}
+          cache: ${{ needs.project.outputs.install == 'true' }}
+          cache_dependency_path: ${{ needs.project.outputs.lockfile }}
+      # Corepack provides Yarn in the version packageManager pins, or its own default without one.
+      # Node.js 25 and later no longer ship it, so it's installed there, in the version pinned at
+      # the top, which Renovate updates.
       - name: Enable Corepack
-        if: needs.project.outputs.manager == 'pnpm' || needs.project.outputs.manager == 'yarn'
+        if: needs.project.outputs.manager == 'yarn'
         run: |
           command -v corepack > /dev/null || npm install --global "corepack@$COREPACK_VERSION"
           corepack enable
@@ -267,16 +320,38 @@ jobs:
               ;;
             bun) bun install --frozen-lockfile ;;
           esac
+      # Drops what the restored store holds but this install doesn't reference, before the post
+      # step of pnpm/action-setup saves it, so the cache doesn't grow with every lockfile change.
+      # The action only prunes when it ran the install itself.
+      - name: Prune pnpm Store
+        if: needs.project.outputs.install == 'true' && needs.project.outputs.manager == 'pnpm'
+        run: pnpm store prune
       # Fails when a signature or attestation doesn't verify, and passes when there is nothing to
-      # verify: without dependencies npm exits with an error, which isn't a finding.
+      # verify: without dependencies npm and pnpm exit with an error, which isn't a finding.
       - name: Verify Registry Signatures
-        if: needs.project.outputs.install == 'true' && needs.project.outputs.manager == 'npm'
+        if: >-
+          needs.project.outputs.install == 'true'
+          && (needs.project.outputs.manager == 'npm' || needs.project.outputs.manager == 'pnpm')
         run: |
-          if [[ "$(npm ls --all --parseable 2> /dev/null | wc -l)" -le 1 ]]; then
+          none() {
             echo "::notice::No dependencies are installed, so there are no signatures to verify."
             exit 0
+          }
+          if [[ "$MANAGER" == npm ]]; then
+            [[ "$(npm ls --all --parseable 2> /dev/null | wc -l)" -le 1 ]] && none
+            npm audit signatures
+            exit
           fi
-          npm audit signatures
+          version="$(pnpm --version)"
+          if (( ${version%%.*} < 11 )); then
+            echo "::warning::pnpm $version can't verify registry signatures; pnpm audit signatures came with pnpm 11. Pin pnpm 11 or later in packageManager to have them verified."
+            exit 0
+          fi
+          status=0
+          output="$(pnpm audit signatures 2>&1)" || status=$?
+          echo "$output"
+          (( status != 0 )) && grep -q ERR_PNPM_AUDIT_NO_PACKAGES <<< "$output" && none
+          exit "$status"
       - name: Run Scripts
         env:
           SCRIPTS: ${{ inputs.scripts }}

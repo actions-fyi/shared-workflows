@@ -16,6 +16,10 @@ calls:
     uses: .github/workflows/_cloudflare.yml
     with:
       working-directory: .github/fixtures/cloudflare
+  - job: fixture-pnpm
+    uses: .github/workflows/_cloudflare.yml
+    with:
+      working-directory: .github/fixtures/cloudflare-pnpm
   - job: no-config
     uses: .github/workflows/_cloudflare.yml
 consumers: []
