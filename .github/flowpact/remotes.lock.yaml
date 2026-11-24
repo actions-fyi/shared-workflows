@@ -211,8 +211,8 @@ remotes:
       - artifact-id
       - artifact-url
       - artifact-digest
-  amannn/action-semantic-pull-request@v6.1.2:
-    sha: 2252a14e810aa9b85c2d560bd7070c802206ecf6
+  amannn/action-semantic-pull-request@v6.1.3:
+    sha: c5e23b7e584519ee15caa684cf60d056aa9f035f
     kind: action
     using: node24
     inputs:
