@@ -16,7 +16,9 @@ name: Test
 #
 # Pull requests from this repository only: fork pull requests get no secrets, so every job skips
 # on them, and a skipped Screen Verdicts counts as passed. The same holds in the merge queue, which
-# waits for every required check: the tests ran on the pull request before it was queued.
+# waits for every required check: the tests ran on the pull request before it was queued. And in a
+# fork outside actions-fyi, where a pull request between the fork's own branches gets no secrets
+# either: there the jobs skip by the repository's owner.
 on:
   pull_request:
   merge_group:
@@ -34,7 +36,9 @@ defaults:
 jobs:
   screen:
     name: Screen
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.repository_owner == 'actions-fyi'
     permissions:
       contents: read # Check out the default branch, which claude-code-action needs on pull requests
     uses: $/.github/workflows/_screen.yml
@@ -52,7 +56,9 @@ jobs:
 
   screen-inputs:
     name: Prepare Screen
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.repository_owner == 'actions-fyi'
     runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
@@ -115,7 +121,9 @@ jobs:
 
   screen-verdicts:
     name: Screen Verdicts
-    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      always() && github.event.pull_request.head.repo.full_name == github.repository
+      && github.repository_owner == 'actions-fyi'
     needs: [screen, screen-block-token, screen-block-token-base64, screen-block-credential]
     runs-on: ubuntu-24.04-firewall
     permissions:

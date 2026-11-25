@@ -20,7 +20,8 @@ permissions: {}
 jobs:
   metadata:
     name: Metadata
-    if: github.event_name == 'workflow_run'
+    # Not in a fork: Claude and Prompt Guard need the org's secrets, which a fork doesn't get.
+    if: github.repository_owner == 'actions-fyi' && github.event_name == 'workflow_run'
     cache-mode: none
     permissions:
       actions: write # Re-run the failed Lint Metadata jobs
@@ -37,7 +38,8 @@ jobs:
 
   rerun:
     name: Re-run Lint Metadata
-    if: github.event_name == 'pull_request_target'
+    # Not in a fork: nothing there listens for the runs it would re-run.
+    if: github.repository_owner == 'actions-fyi' && github.event_name == 'pull_request_target'
     # A low-trust trigger: the rerun job needs no cache.
     cache-mode: none
     # What the rerun job of _metadata-rerun.yml declares; a called job can't get more.

@@ -62,6 +62,10 @@ name: Validate
 # anything runs:
 #   contents: read  # config: read the Wrangler config, package.json and the lockfile; dry-run:
 #                   # check the repository out
+#
+# In a fork, the jobs run on ubuntu-24.04 instead of ubuntu-24.04-firewall: the egress firewall's
+# runner belongs to the org, so a fork has none and its jobs would wait for one until they time out.
+# A fork's own runs get none of the org's secrets, so there is nothing for the firewall to guard.
 on:
   workflow_call:
     inputs:
@@ -87,7 +91,7 @@ defaults:
 jobs:
   config:
     name: Find Config
-    runs-on: ubuntu-24.04-firewall
+    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       contents: read # Read the Wrangler config, package.json and the lockfile
@@ -211,7 +215,7 @@ jobs:
     name: Dry Run
     needs: config
     if: needs.config.outputs.found == 'true'
-    runs-on: ubuntu-24.04-firewall
+    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     # github.ref is refs/pull/<number>/merge for a pull request, a unique
     # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, and the

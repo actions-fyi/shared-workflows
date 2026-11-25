@@ -29,6 +29,10 @@ name: oxfmt
 #
 # The calling job must grant what the oxfmt job declares:
 #   contents: read  # check the repository out
+#
+# In a fork, the jobs run on ubuntu-24.04 instead of ubuntu-24.04-firewall: the egress firewall's
+# runner belongs to the org, so a fork has none and its jobs would wait for one until they time out.
+# A fork's own runs get none of the org's secrets, so there is nothing for the firewall to guard.
 on:
   workflow_call:
 
@@ -42,7 +46,7 @@ env:
 jobs:
   oxfmt:
     name: oxfmt
-    runs-on: ubuntu-24.04-firewall
+    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
     timeout-minutes: 10
     concurrency:
       group: oxfmt-${{ github.ref }}

@@ -11,6 +11,8 @@ permissions: {}
 jobs:
   review:
     name: Review
+    # Not in a fork: Claude and Prompt Guard need the org's secrets, which a fork doesn't get.
+    if: github.repository_owner == 'actions-fyi'
     # The union of what the jobs of _claude-review.yml declare; a called job can't get more.
     permissions:
       actions: read # Find the last reviewed commit from this workflow's earlier runs
