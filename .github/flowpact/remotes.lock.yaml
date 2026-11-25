@@ -602,8 +602,8 @@ remotes:
       config_file_path: {}
       npm_cache:
         default: 'false'
-  zizmorcore/zizmor-action@v0.8.1:
-    sha: 45d7276c9ca790aabd705e31ca99c6185c3e76dd
+  zizmorcore/zizmor-action@v0.9.2:
+    sha: 1b4550e929643b8b26a62303c6bd64814271a4f1
     kind: action
     using: composite
     inputs:
@@ -611,6 +611,8 @@ remotes:
         default: .
       collect:
         default: default
+      strict-collection:
+        default: 'false'
       online-audits:
         default: 'true'
       persona:
