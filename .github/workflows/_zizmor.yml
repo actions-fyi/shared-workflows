@@ -43,7 +43,7 @@ permissions: {}
 # release may need a newer zizmor-action first. Renovate groups the two in one pull request.
 env:
   # renovate: datasource=pypi depName=zizmor
-  ZIZMOR_VERSION: 1.31.1
+  ZIZMOR_VERSION: 1.33.1
 
 jobs:
   zizmor:
@@ -100,7 +100,7 @@ jobs:
       # repository only has with GitHub Code Security; see the top. There, annotations report the
       # results instead. The action only accepts annotations with advanced-security off.
       - name: Run zizmor 🌈
-        uses: zizmorcore/zizmor-action@v0.8.1
+        uses: zizmorcore/zizmor-action@v0.9.2
         with:
           version: ${{ inputs.zizmor-version || env.ZIZMOR_VERSION }}
           config: ${{ steps.config.outputs.path }}
