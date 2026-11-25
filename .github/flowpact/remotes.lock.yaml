@@ -233,8 +233,8 @@ remotes:
       headerPattern: {}
       headerPatternCorrespondence: {}
       wip: {}
-  anthropics/claude-code-action@v1.0.286:
-    sha: acfe7992852970efb4fee683d63d628e3e52df67
+  anthropics/claude-code-action@v1.0.289:
+    sha: eb56b6666facdbd501035f4a0269d8caee2e7a8b
     kind: action
     using: composite
     inputs:
@@ -253,7 +253,7 @@ remotes:
       allowed_non_write_users:
         default: ''
       allow_fork_prs:
-        default: 'true'
+        default: 'false'
       restrict_untrusted_prs:
         default: 'true'
       include_comments_by_actor:
