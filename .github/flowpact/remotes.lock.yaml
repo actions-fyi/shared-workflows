@@ -404,8 +404,8 @@ remotes:
       - impact-ok
       - version-changes
       - version-verdict
-  github/codeql-action/analyze@v4.39.4:
-    sha: 1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+  github/codeql-action/analyze@v4.39.5:
+    sha: 915412ff23e8b7659517e607487dbeae018f2934
     kind: action
     using: node24
     inputs:
@@ -441,8 +441,8 @@ remotes:
       - db-locations
       - sarif-output
       - sarif-id
-  github/codeql-action/init@v4.39.4:
-    sha: 1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+  github/codeql-action/init@v4.39.5:
+    sha: 915412ff23e8b7659517e607487dbeae018f2934
     kind: action
     using: node24
     inputs:
@@ -481,8 +481,8 @@ remotes:
     outputs:
       - codeql-path
       - codeql-version
-  github/codeql-action/upload-sarif@v4.39.4:
-    sha: 1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+  github/codeql-action/upload-sarif@v4.39.5:
+    sha: 915412ff23e8b7659517e607487dbeae018f2934
     kind: action
     using: node24
     inputs:
