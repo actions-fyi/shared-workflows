@@ -17,8 +17,9 @@ name: Audit
 #
 # In private and internal repositories, code scanning needs GitHub Code Security, so the results
 # aren't uploaded there, and zizmor reports them as annotations instead. This matches _codeql.yml,
-# which skips those repositories. Without the upload, zizmor's exit status decides the job,
-# where in a public repository the action never fails on findings and code scanning decides
+# which skips those repositories. Forks outside actions-fyi get annotations too, as their code
+# scanning may not be enabled. Without the upload, zizmor's exit status decides the job, where in
+# a public repository of the org the action never fails on findings and code scanning decides
 # what blocks a merge.
 #
 # Known caveat: code scanning keys an analysis on the workflow path and the job, and those come
@@ -107,5 +108,7 @@ jobs:
           persona: pedantic
           min-severity: low
           min-confidence: medium
-          advanced-security: ${{ !github.event.repository.private }}
-          annotations: ${{ github.event.repository.private }}
+          advanced-security: >-
+            ${{ !github.event.repository.private && github.repository_owner == 'actions-fyi' }}
+          annotations: >-
+            ${{ github.event.repository.private || github.repository_owner != 'actions-fyi' }}
