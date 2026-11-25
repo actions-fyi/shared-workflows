@@ -17,10 +17,6 @@ name: Validate
 #
 # Events: the renovate and upstream jobs run on any event, e.g. pull_request, merge_group and push.
 # The fix job only runs on pull requests from a branch of the same repository.
-#
-# In a fork, the jobs run on ubuntu-24.04 instead of ubuntu-24.04-firewall: the egress firewall's
-# runner belongs to the org, so a fork has none and its jobs would wait for one until they time out.
-# A fork's own runs get none of the org's secrets, so there is nothing for the firewall to guard.
 on:
   workflow_call:
 
@@ -37,7 +33,7 @@ env:
 jobs:
   renovate:
     name: Renovate Config
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     concurrency:
       group: lint-${{ github.ref }}
     permissions:
@@ -66,7 +62,7 @@ jobs:
 
   upstream:
     name: Renovate Upstream
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     concurrency:
       group: renovate-check-${{ github.ref }}
     permissions:
@@ -137,7 +133,7 @@ jobs:
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.repository_owner == 'actions-fyi'
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
     # of replacing each other; it can't be combined with cancel-in-progress.

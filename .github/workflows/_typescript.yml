@@ -80,10 +80,6 @@ name: Test
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
 #   contents: read  # project: read package.json and the lockfile; check: check the package out
-#
-# In a fork, the jobs run on ubuntu-24.04 instead of ubuntu-24.04-firewall: the egress firewall's
-# runner belongs to the org, so a fork has none and its jobs would wait for one until they time out.
-# A fork's own runs get none of the org's secrets, so there is nothing for the firewall to guard.
 on:
   workflow_call:
     inputs:
@@ -132,7 +128,7 @@ defaults:
 jobs:
   project:
     name: Find Package
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 5
     permissions:
       contents: read # Read package.json and the lockfile
@@ -264,7 +260,7 @@ jobs:
     name: TypeScript
     needs: project
     if: needs.project.outputs.check == 'true'
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     timeout-minutes: 30
     # github.ref is refs/pull/<number>/merge for a pull request and a unique
     # refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, so the two

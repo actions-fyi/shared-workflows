@@ -81,10 +81,6 @@ name: Validate Actions Lockfile
 #
 # A failed check on a pull request is explained by _explain.yml, which the consumer repository's
 # workflow_run listener calls when this run completes. It reads the failed jobs' logs.
-#
-# In a fork, the jobs run on ubuntu-24.04 instead of ubuntu-24.04-firewall: the egress firewall's
-# runner belongs to the org, so a fork has none and its jobs would wait for one until they time out.
-# A fork's own runs get none of the org's secrets, so there is nothing for the firewall to guard.
 on:
   workflow_call:
 
@@ -101,7 +97,7 @@ defaults:
 jobs:
   changes:
     name: Changed Workflows
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # Compare the changes against the base
     outputs:
@@ -157,7 +153,7 @@ jobs:
     name: Actions Lockfile
     needs: changes
     if: needs.changes.outputs.check == 'true'
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     # Per caller: in a repository with two callers, its own and a ruleset's, neither cancels the other.
     concurrency:
       group: actions-lock-check-${{ github.workflow_ref }}-${{ github.ref }}
@@ -265,7 +261,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.repository_owner == 'actions-fyi'
       && github.event.pull_request.user.login != 'dependabot[bot]'
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # Read the workflows
     env:
@@ -379,7 +375,7 @@ jobs:
       !cancelled()
       && needs.fix.result == 'success'
       && needs.fix.outputs.changed == 'true'
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
     # of replacing each other; it can't be combined with cancel-in-progress. If another one

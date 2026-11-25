@@ -27,10 +27,6 @@ name: Audit
 # to the default branch through another (e.g. the push caller from actions-fyi/.github), the two
 # analyses don't match, and pull requests can show "no analysis on the base branch". Where
 # possible, callers use the same file name, zizmor.yml, and the same job id, zizmor.
-#
-# In a fork, the jobs run on ubuntu-24.04 instead of ubuntu-24.04-firewall: the egress firewall's
-# runner belongs to the org, so a fork has none and its jobs would wait for one until they time out.
-# A fork's own runs get none of the org's secrets, so there is nothing for the firewall to guard.
 on:
   workflow_call:
     inputs:
@@ -53,7 +49,7 @@ env:
 jobs:
   zizmor:
     name: CI Config
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     permissions:
       security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
       contents: read         # Only needed for private repos. Needed to clone the repo.

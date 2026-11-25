@@ -85,10 +85,6 @@ name: Audit
 #   actions: read          # sarif: let upload-sarif read the workflow run
 #   id-token: write        # commit: exchange the job's OIDC token with Octo STS
 #   issues: write          # issue: open, comment on and close the issue
-#
-# In a fork, the jobs run on ubuntu-24.04 instead of ubuntu-24.04-firewall: the egress firewall's
-# runner belongs to the org, so a fork has none and its jobs would wait for one until they time out.
-# A fork's own runs get none of the org's secrets, so there is nothing for the firewall to guard.
 on:
   workflow_call:
 
@@ -110,7 +106,7 @@ defaults:
 jobs:
   check:
     name: Data Flow
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     # Per caller: in a repository with two callers, its own and a ruleset's, neither cancels the
     # other.
     concurrency:
@@ -202,7 +198,7 @@ jobs:
           && github.event.pull_request.head.repo.full_name == github.repository
         )
       )
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     permissions:
       contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       security-events: write # Upload the SARIF report to code scanning
@@ -243,7 +239,7 @@ jobs:
       && github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.repository_owner == 'actions-fyi'
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
     # of replacing each other; it can't be combined with cancel-in-progress.
@@ -371,7 +367,7 @@ jobs:
     name: Commit Contracts and Remotes Lockfile
     needs: update
     if: ${{ !cancelled() && needs.update.outputs.changed == 'true' }}
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that commits to a pull request's branch, in any workflow, so only one
     # of them runs at a time per pull request. queue: max lets the others wait their turn instead
     # of replacing each other; it can't be combined with cancel-in-progress.
@@ -515,7 +511,7 @@ jobs:
       && contains(fromJSON('["success","failure"]'), needs.check.result)
       && github.event_name == 'push'
       && github.repository_owner == 'actions-fyi'
-    runs-on: ${{ github.repository_owner == 'actions-fyi' && 'ubuntu-24.04-firewall' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-firewall
     # One group for every job that opens, comments on or closes an issue or a pull request, in any
     # workflow, so they never act on the same issue at once, and never open two. queue: max lets
     # the others wait their turn instead of replacing each other.
