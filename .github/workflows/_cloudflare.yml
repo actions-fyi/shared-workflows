@@ -41,10 +41,14 @@ name: Validate
 #
 # pnpm comes from pnpm/action-setup, set up after Node.js, in the version that packageManager or
 # devEngines.packageManager of package.json pins, and in PNPM_VERSION below when neither does; see
-# _typescript.yml, which sets it up the same way. pnpm 11 and later fail the install when a
-# dependency has a build script that allowBuilds of pnpm-workspace.yaml neither allows nor denies,
-# so a project decides each one there, Wrangler's esbuild and workerd among them. A dry run needs
-# neither of those two to run, so denying them is enough; see the pnpm fixture.
+# _typescript.yml, which sets it up the same way.
+#
+# Dependencies' install scripts run only where the project decided on them: allowScripts of
+# package.json for npm, allowBuilds of pnpm-workspace.yaml for pnpm. A dependency with an install
+# script and no entry fails the install before the script runs, and the job summary lists the
+# entries to add; see _typescript.yml, which checks them the same way. Wrangler's esbuild and
+# workerd have install scripts, and a dry run needs neither of them, so denying both with `false`
+# is enough; see the two fixtures.
 #
 # The dry-run job runs the repository's code: install scripts of its dependencies, and the build
 # command, all of which a pull request, a Renovate update among them, can change. So it holds a
@@ -254,12 +258,92 @@ jobs:
           package_json_file: ${{ needs.config.outputs.package-json }}
           cache: true
           cache_dependency_path: ${{ needs.config.outputs.lockfile }}
+      # Dependencies' install scripts run only once package.json or pnpm-workspace.yaml allows them,
+      # and one that neither allows nor denies them fails the install before they run; see the
+      # top. The settings that would lift that are overridden here, and the job summary lists the
+      # entries to add.
       - name: Install Dependencies
         run: |
+          log="$RUNNER_TEMP/install.log"
+          status=0
           case "$MANAGER" in
-            npm) npm ci ;;
-            pnpm) pnpm install --frozen-lockfile ;;
+            npm)
+              version="$(npm --version)"
+              if [[ "$(printf '%s\n' 11.16.0 "$version" | sort -V | head -n 1)" != 11.16.0 ]]; then
+                echo "::warning::npm $version runs the install scripts of every dependency. npm checks them against allowScripts in package.json only since 11.16.0, which Node.js 24 and later ship."
+              fi
+              NPM_CONFIG_STRICT_ALLOW_SCRIPTS=true NPM_CONFIG_DANGEROUSLY_ALLOW_ALL_SCRIPTS=false \
+                npm ci 2>&1 | tee "$log" || status=$?
+              ;;
+            pnpm)
+              version="$(pnpm --version)"
+              if (( ${version%%.*} < 10 )); then
+                echo "::warning::pnpm $version runs the build scripts of every dependency. pnpm checks them against its allowlist only since pnpm 10."
+              fi
+              pnpm install --frozen-lockfile \
+                --config.strict-dep-builds=true --config.dangerously-allow-all-builds=false \
+                2>&1 | tee "$log" || status=$?
+              ;;
           esac
+          (( status == 0 )) && exit 0
+          # The packages whose install scripts wait for a decision, as name@version.
+          pending=()
+          if [[ "$MANAGER" == npm ]] && grep -q ESTRICTALLOWSCRIPTS "$log"; then
+            # The check stops npm before it installs anything, so npm lists them from an install
+            # that runs no script.
+            npm ci --ignore-scripts > /dev/null 2>&1 || true
+            mapfile -t pending < <(npm install-scripts ls --json 2> /dev/null \
+              | jq -r '.allowScripts[]?.changes[]? | select(.change == "pending") | .key')
+          elif [[ "$MANAGER" == pnpm ]] && grep -q ERR_PNPM_IGNORED_BUILDS "$log"; then
+            mapfile -t pending < <(jq -r '.ignoredBuilds[]?' node_modules/.modules.yaml 2> /dev/null)
+          fi
+          # The names come from the pull request's lockfile, so only well-formed ones reach the
+          # summary and the annotation.
+          valid=()
+          for key in "${pending[@]}"; do
+            [[ "$key" =~ ^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*@[0-9A-Za-z.+_-]+$ ]] \
+              && valid+=("$key")
+          done
+          (( ${#valid[@]} == 0 )) && exit "$status"
+          if [[ "$MANAGER" == npm ]]; then
+            where="\`allowScripts\` in package.json"
+          else
+            where="\`allowBuilds\` in pnpm-workspace.yaml"
+          fi
+          count="${#valid[@]} dependencies have install scripts"
+          (( ${#valid[@]} == 1 )) && count="1 dependency has an install script"
+          echo "::error::$count that ${where//\`/} neither allows nor denies, so none ran: ${valid[*]}. Record a decision for each; the job summary has the entries."
+          {
+            echo "### Install Scripts Awaiting Review"
+            echo
+            echo "These dependencies have install scripts that $where neither allows nor denies, so the install stopped without running them:"
+            echo
+            printf -- "- \`%s\`\n" "${valid[@]}"
+            echo
+            echo "Review each script, then record a decision. \`true\` lets the script of that version run; \`false\` skips it. To allow them all:"
+            echo
+            if [[ "$MANAGER" == npm ]]; then
+              echo '```json'
+              echo '"allowScripts": {'
+              for i in "${!valid[@]}"; do
+                sep=","
+                (( i == ${#valid[@]} - 1 )) && sep=""
+                echo "  \"${valid[i]}\": true$sep"
+              done
+              echo '}'
+              echo '```'
+              echo
+              echo "\`npm install-scripts approve <name>\` writes the same pinned entry for the installed version. \`npm install-scripts deny <name>\` writes \`false\` for the name alone, which skips the script of every version."
+            else
+              echo '```yaml'
+              echo 'allowBuilds:'
+              printf '  %s: true\n' "${valid[@]}"
+              echo '```'
+              echo
+              echo "\`pnpm approve-builds <name>\` writes the name without a version, which allows every version; \`pnpm approve-builds '!<name>'\` denies it."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       # Drops what the restored store holds but this install doesn't reference, before the post
       # step of pnpm/action-setup saves it. The action only prunes when it ran the install itself.
       - name: Prune pnpm Store
