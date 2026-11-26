@@ -3,11 +3,14 @@
 $schema: https://ciatlas.github.io/flowpact/schemas/contract/v1.json
 version: 1
 kind: workflow
-path: .github/workflows/title-edited.yml
-name: Title Edited
+path: .github/workflows/title-edit.yml
+name: Relay Title Edit
 triggers:
   - pull_request
 interface:
   inputs: {}
   outputs: {}
+calls:
+  - job: title-edit
+    uses: .github/workflows/_title-edit.yml
 consumers: []

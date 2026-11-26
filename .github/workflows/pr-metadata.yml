@@ -5,13 +5,13 @@ name: PR Metadata
 # of its own instead of the bare Lint. "Check Metadata" is its old name, which branches cut before
 # the rename still run under; remove it once those are gone.
 #
-# A title edit starts no run of Lint Metadata, so the same listener also follows Title Edited,
-# title-edited.yml, which runs on edited pull requests; the rerun job then re-runs Lint Metadata
-# when the title changed; see _metadata-rerun.yml. The org never uses pull_request_target. Each job
-# runs only for its own workflows' runs, and the rerun job gets no secrets.
+# A title edit starts no run of Lint Metadata, so the same listener also follows Relay Title Edit,
+# title-edit.yml, which runs on edited pull requests, where the rerun job re-runs Lint Metadata when
+# the title changed; see _metadata-rerun.yml. Each job runs only on its own workflows' runs, and the
+# rerun job gets no secrets.
 on:
   workflow_run:
-    workflows: ["Lint Metadata", "Check Metadata", "Title Edited"]
+    workflows: ["Lint Metadata", "Check Metadata", "Relay Title Edit"]
     types: [completed]
 
 permissions: {}
@@ -43,11 +43,11 @@ jobs:
     # Not in a fork: nothing there listens for the runs it would re-run.
     if: >-
       github.repository_owner == 'actions-fyi'
-      && github.event.workflow_run.name == 'Title Edited'
-    # Follows a run a fork pull request can start: the rerun job needs no cache.
+      && github.event.workflow_run.name == 'Relay Title Edit'
+    # A low-trust trigger: the rerun job needs no cache.
     cache-mode: none
     # What the rerun job of _metadata-rerun.yml declares; a called job can't get more.
     permissions:
-      actions: write # Read the Title Edited run's jobs; re-run the Lint Metadata runs
+      actions: write # Read the relay run's jobs; re-run the Lint Metadata runs
       contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
     uses: $/.github/workflows/_metadata-rerun.yml
