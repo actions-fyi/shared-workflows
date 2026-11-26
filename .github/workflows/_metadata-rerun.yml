@@ -9,9 +9,10 @@ name: Re-run Lint Metadata
 # Lint Metadata, the org ruleset workflow that checks the title, runs only on the default activity
 # types of pull_request, since rulesets ignore event filters. Editing a title is not one of them, so
 # a title fixed by hand stays red until someone re-runs the check, and one edited into an invalid
-# title stays green. The caller runs this on pull_request_target with the edited type, and when the
-# title is what changed, it re-runs the latest Lint Metadata run of the pull request's head commit:
-# the failed jobs of a run that failed, the whole run of one that passed. The check reads the title
+# title stays green. PR Title, the workflow of pr-title.yml, runs on the edited type and succeeds
+# when the title is what changed. The caller listens to its runs with workflow_run and calls this
+# after them, and it re-runs the latest Lint Metadata run of the pull request's head commit: the
+# failed jobs of a run that failed, the whole run of one that passed. The check reads the title
 # through the API, so the re-run sees the new one.
 #
 # A run that is still queued or in progress is left alone, as is a head commit without a run, such
@@ -19,9 +20,11 @@ name: Re-run Lint Metadata
 # _pr-metadata.yml ignores, so a title edited by hand is never rewritten. _pr-metadata.yml's own
 # title fix uses the job's token, whose edit starts no workflow, so it doesn't re-run twice.
 #
-# pull_request_target runs this base branch's version with a write token, for fork pull requests
-# too, so the job reads nothing from the pull request but its number and head SHA, checks nothing
-# out and runs no code of it. Its token can only re-run workflow runs.
+# workflow_run runs the default branch's version with a write token, for fork pull requests too,
+# so the job reads nothing of the PR Title run but its event, conclusion and head SHA, checks
+# nothing out and runs no code of the pull request. Its token can only re-run workflow runs. A
+# pull request can change pr-title.yml, or add a workflow of the same name, and so start this
+# without a title edit; all that does is re-run the check of its own head commit.
 #
 # The calling job must grant what the rerun job declares, or the call fails before anything runs:
 #   actions: write   # re-run the Lint Metadata runs
@@ -35,14 +38,14 @@ jobs:
   rerun:
     name: Re-run Lint Metadata
     if: >-
-      github.event_name == 'pull_request_target'
-      && github.event.action == 'edited'
-      && github.event.changes.title != null
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04-firewall
     timeout-minutes: 5
     # Edits in quick succession re-run the check once, for the last of them.
     concurrency:
-      group: metadata-rerun-${{ github.event.pull_request.number }}
+      group: metadata-rerun-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: true
     permissions:
       contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
@@ -51,7 +54,7 @@ jobs:
       - name: Re-run Lint Metadata
         uses: actions/github-script@v9.0.0
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         with:
           script: |
             const { owner, repo } = context.repo;
