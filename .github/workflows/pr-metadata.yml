@@ -5,14 +5,16 @@ name: PR Metadata
 # of its own instead of the bare Lint. "Check Metadata" is its old name, which branches cut before
 # the rename still run under; remove it once those are gone.
 #
-# A title edit starts no run of Lint Metadata, so the same listener also follows PR Title, the
-# workflow of pr-title.yml that runs when a title is edited. After its runs the rerun job re-runs
-# Lint Metadata; see _metadata-rerun.yml. Each job runs only for its own workflows, and the rerun
-# job gets no secrets.
+# A title edit starts no run of Lint Metadata, so this workflow also runs on edited pull requests,
+# where the rerun job re-runs it when the title changed; see _metadata-rerun.yml. That is a plain
+# pull_request run, so it does nothing for fork pull requests, whose token is read-only. Each job
+# runs only on its own event, and the rerun job gets no secrets.
 on:
   workflow_run:
-    workflows: ["Lint Metadata", "Check Metadata", "PR Title"]
+    workflows: ["Lint Metadata", "Check Metadata"]
     types: [completed]
+  pull_request:
+    types: [edited]
 
 permissions: {}
 
@@ -20,7 +22,7 @@ jobs:
   metadata:
     name: Metadata
     # Not in a fork: Claude and Prompt Guard need the org's secrets, which a fork doesn't get.
-    if: github.repository_owner == 'actions-fyi' && github.event.workflow_run.name != 'PR Title'
+    if: github.repository_owner == 'actions-fyi' && github.event_name == 'workflow_run'
     cache-mode: none
     permissions:
       actions: write # Re-run the failed Lint Metadata jobs
@@ -38,8 +40,8 @@ jobs:
   rerun:
     name: Re-run Lint Metadata
     # Not in a fork: nothing there listens for the runs it would re-run.
-    if: github.repository_owner == 'actions-fyi' && github.event.workflow_run.name == 'PR Title'
-    # A low-trust trigger: the rerun job needs no cache.
+    if: github.repository_owner == 'actions-fyi' && github.event_name == 'pull_request'
+    # The rerun job needs no cache.
     cache-mode: none
     # What the rerun job of _metadata-rerun.yml declares; a called job can't get more.
     permissions:

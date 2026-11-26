@@ -6,6 +6,7 @@ kind: workflow
 path: .github/workflows/pr-metadata.yml
 name: PR Metadata
 triggers:
+  - pull_request
   - workflow_run
 interface:
   inputs: {}
