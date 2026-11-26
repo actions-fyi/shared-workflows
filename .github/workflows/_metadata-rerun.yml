@@ -9,22 +9,26 @@ name: Re-run Lint Metadata
 # Lint Metadata, the org ruleset workflow that checks the title, runs only on the default activity
 # types of pull_request, since rulesets ignore event filters. Editing a title is not one of them, so
 # a title fixed by hand stays red until someone re-runs the check, and one edited into an invalid
-# title stays green. The caller runs this on pull_request_target with the edited type, and when the
-# title is what changed, it re-runs the latest Lint Metadata run of the pull request's head commit:
-# the failed jobs of a run that failed, the whole run of one that passed. The check reads the title
-# through the API, so the re-run sees the new one.
+# title stays green. The caller's repository runs Title Edited, title-edited.yml, on edited pull
+# requests; its Title Changed job runs only when the title changed. The caller is a workflow_run
+# listener of Title Edited, and when that job passed, this re-runs the latest Lint Metadata run of
+# the pull request's head commit: the failed jobs of a run that failed, the whole run of one that
+# passed. The check reads the title through the API, so the re-run sees the new one.
 #
 # A run that is still queued or in progress is left alone, as is a head commit without a run, such
 # as one in a repository the ruleset doesn't cover. A re-run is that run's second attempt, which
 # _pr-metadata.yml ignores, so a title edited by hand is never rewritten. _pr-metadata.yml's own
 # title fix uses the job's token, whose edit starts no workflow, so it doesn't re-run twice.
 #
-# pull_request_target runs this base branch's version with a write token, for fork pull requests
-# too, so the job reads nothing from the pull request but its number and head SHA, checks nothing
-# out and runs no code of it. Its token can only re-run workflow runs.
+# The org never uses pull_request_target. workflow_run runs the default branch's listener with a
+# write token, for fork pull requests too, while Title Edited ran the pull request's own copy with a
+# read-only token, so its run is untrusted. The job takes nothing from it but its head SHA and
+# whether a job named Title Changed passed, checks nothing out and runs no code of it. A forged run
+# can at most re-run the title check of its own head commit. Its token can only re-run workflow
+# runs.
 #
 # The calling job must grant what the rerun job declares, or the call fails before anything runs:
-#   actions: write   # re-run the Lint Metadata runs
+#   actions: write   # read the Title Edited run's jobs; re-run the Lint Metadata runs
 #   contents: read   # the egress firewall reads .github/egress-firewall.yaml
 on:
   workflow_call:
@@ -34,28 +38,48 @@ permissions: {}
 jobs:
   rerun:
     name: Re-run Lint Metadata
+    # A run whose jobs were all skipped, because the title didn't change, may still conclude in
+    # success, so the script checks the Title Changed job too.
     if: >-
-      github.event_name == 'pull_request_target'
-      && github.event.action == 'edited'
-      && github.event.changes.title != null
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.name == 'Title Edited'
+      && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04-firewall
     timeout-minutes: 5
     # Edits in quick succession re-run the check once, for the last of them.
     concurrency:
-      group: metadata-rerun-${{ github.event.pull_request.number }}
+      group: metadata-rerun-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: true
     permissions:
       contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
-      actions: write # Re-run the Lint Metadata runs
+      actions: write # Read the Title Edited run's jobs; re-run the Lint Metadata runs
     steps:
       - name: Re-run Lint Metadata
         uses: actions/github-script@v9.0.0
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELAY_RUN_ID: ${{ github.event.workflow_run.id }}
         with:
           script: |
             const { owner, repo } = context.repo;
             const head_sha = process.env.HEAD_SHA;
+            // The workflow_run payload doesn't say why Title Edited ran, so its Title Changed job
+            // tells: it runs only when the title changed.
+            let changed;
+            try {
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner, repo, run_id: Number(process.env.RELAY_RUN_ID), filter: 'latest', per_page: 100,
+              });
+              changed = jobs.some((j) => j.name === 'Title Changed' && j.conclusion === 'success');
+            } catch (error) {
+              core.warning(`Couldn't list the jobs of the Title Edited run: ${error.message}`);
+              return;
+            }
+            if (!changed) {
+              core.notice('The title didn\'t change, so nothing is re-run.');
+              return;
+            }
             let runs;
             try {
               runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {

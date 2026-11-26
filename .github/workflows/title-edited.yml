@@ -1,0 +1,39 @@
+name: Title Edited
+# A relay, not a check. Lint Metadata, the org ruleset workflow that checks the title, runs only on
+# the default activity types of pull_request, since rulesets ignore event filters, so editing a
+# title starts no run of it. This workflow runs on edited pull requests instead, and its Title
+# Changed job runs only when the title is what changed. Its completion starts the PR Metadata
+# listener, pr-metadata.yml, whose rerun job calls _metadata-rerun.yml to re-run Lint Metadata.
+#
+# The org never uses pull_request_target. Under pull_request, a fork pull request runs this with
+# a read-only token and no secrets. The listener's workflow_run run holds the write token, runs the
+# default branch's version of the listener, and takes nothing from this run but its head SHA and
+# whether Title Changed passed. A first-time contributor's fork pull request needs its workflows
+# approved before this runs, as for every other pull_request workflow.
+#
+# _metadata-rerun.yml finds this run by its workflow name and its job by the job name, so neither
+# may change without it.
+on:
+  pull_request:
+    types: [edited]
+
+permissions: {}
+
+# Title edits in quick succession relay once, for the last of them; the re-run reads the title
+# then. Other edits are grouped apart, so one of them can't cancel a title edit's run.
+concurrency:
+  group: title-edited-${{ github.event.pull_request.number }}-${{ github.event.changes.title != null }}
+  cancel-in-progress: true
+
+jobs:
+  title-changed:
+    name: Title Changed
+    # Not in a fork: nothing there listens for this run.
+    if: github.repository_owner == 'actions-fyi' && github.event.changes.title != null
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 1
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+    steps:
+      - name: Relay the Title Edit
+        run: echo "The title changed; PR Metadata re-runs Lint Metadata for this pull request."
