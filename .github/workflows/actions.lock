@@ -97,6 +97,7 @@ workflows:
     '.github/workflows/label-sync.yml': []
     '.github/workflows/metadata.yml': []
     '.github/workflows/pr-metadata.yml': []
+    '.github/workflows/pr-title.yml': []
     '.github/workflows/renovate.yml': []
     '.github/workflows/test.yml': []
     '.github/workflows/typescript.yml': []
