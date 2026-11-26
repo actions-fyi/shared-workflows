@@ -71,6 +71,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
         - 'anthropics/claude-code-action@v1.0.290'
+    '.github/workflows/_title-edit.yml': []
     '.github/workflows/_triage.yml':
         - 'actions/checkout@v7.0.1'
         - 'anthropics/claude-code-action@v1.0.290'
@@ -99,6 +100,7 @@ workflows:
     '.github/workflows/pr-metadata.yml': []
     '.github/workflows/renovate.yml': []
     '.github/workflows/test.yml': []
+    '.github/workflows/title-edit.yml': []
     '.github/workflows/typescript.yml': []
     '.github/workflows/zizmor.yml': []
 dependencies:
