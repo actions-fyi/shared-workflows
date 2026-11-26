@@ -1,0 +1,45 @@
+name: Relay Title Edit
+# A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
+# releases it under immutable tags. title-edit.yml of actions-fyi/.github, which is distributed to
+# the org's repositories, calls it by full path and tag; this repository's own title-edit.yml calls
+# it with `$/`. It runs as part of the caller's run, in the target repository's context: the
+# caller's event and token.
+#
+# The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
+#
+# Callers run it on pull_request with the edited type. Lint Metadata, the org ruleset workflow that
+# checks the title, runs only on the default activity types of pull_request, since rulesets ignore
+# event filters, so editing a title starts no run of it. The relay job runs when the title is what
+# changed, and does nothing else: its run's completion starts the PR Metadata listener, whose rerun
+# job calls _metadata-rerun.yml. That job holds the write token that re-runs Lint Metadata, and
+# reads from this run only its head and whether the relay job passed. _metadata-rerun.yml finds the
+# relay job by its name, RELAY_JOB there, so the name must not change without it.
+#
+# Under pull_request, fork pull requests get no secrets and a read-only token, so this only relays.
+# Their first-time contributors' runs wait for approval, like every other pull_request run.
+#
+# The calling job must grant what the relay job declares, or the call fails before anything runs:
+#   contents: read  # the egress firewall reads .github/egress-firewall.yaml
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  relay:
+    name: Relay Title Edit
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.action == 'edited'
+      && github.event.changes.title != null
+    runs-on: ubuntu-24.04-firewall
+    timeout-minutes: 5
+    # Edits in quick succession relay once, for the last of them; the re-run reads the title then.
+    concurrency:
+      group: title-edit-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+    steps:
+      - name: Relay Title Edit
+        run: echo "::notice::The title changed; PR Metadata re-runs Lint Metadata."

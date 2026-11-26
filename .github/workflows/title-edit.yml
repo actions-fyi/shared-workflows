@@ -1,0 +1,21 @@
+name: Relay Title Edit
+# This repository's caller of its own shared workflow _title-edit.yml, which holds the relay; see
+# there. It calls the sibling with `$/`, so a pull request runs its own version of it.
+#
+# pr-metadata.yml listens to runs of this name, so the name stays the same as the shared
+# workflow's.
+on:
+  pull_request:
+    types: [edited]
+
+permissions: {}
+
+jobs:
+  title-edit:
+    name: Title Edit
+    # Not in a fork: nothing there listens for this run.
+    if: github.repository_owner == 'actions-fyi'
+    # What the relay job of _title-edit.yml declares; a called job can't get more.
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+    uses: $/.github/workflows/_title-edit.yml

@@ -14,9 +14,9 @@ name: Lint Metadata
 # Checks that the pull request title is a Conventional Commits title. Editing a title starts no new
 # run of it. Fixes are applied by _pr-metadata.yml, whose listener follows the caller's runs by
 # their name, Lint Metadata, and re-runs them after a fix; the same listener runs
-# _metadata-rerun.yml when someone edits the title, which re-runs them too. Elsewhere, after fixing
-# a failed title by hand, re-run the job or push again. This check neither depends on nor waits for
-# either.
+# _metadata-rerun.yml when _title-edit.yml relays a title edit, which re-runs them too. Elsewhere,
+# after fixing a failed title by hand, re-run the job or push again. This check neither depends on
+# nor waits for either.
 #
 # The calling job must grant what the title job declares, or the call fails before anything runs:
 #   contents: read       # the egress firewall reads .github/egress-firewall.yaml
