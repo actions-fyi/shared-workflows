@@ -1,8 +1,9 @@
 name: Relay Title Edit
 # A reusable workflow, not a ruleset workflow. It lives in actions-fyi/shared-workflows, which
-# releases it under immutable tags. Workflows in other repositories call it by full path and tag;
-# this repository's own title-edit.yml calls it with `$/`. It runs as part of the caller's run, in
-# the target repository's context: the caller's event and token.
+# releases it under immutable tags. title-edit.yml of actions-fyi/.github, which is distributed to
+# the org's repositories, calls it by full path and tag; this repository's own title-edit.yml calls
+# it with `$/`. It runs as part of the caller's run, in the target repository's context: the
+# caller's event and token.
 #
 # The _ prefix marks a shared workflow: called only with workflow_call, never by events or rulesets.
 #
