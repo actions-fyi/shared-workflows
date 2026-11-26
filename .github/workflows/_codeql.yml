@@ -152,6 +152,11 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          # Restores and saves the dependency caches of the languages CodeQL caches for, Go, Java
+          # and C# among them, so autobuild doesn't download every dependency again on each run.
+          # A pull request's run saves its caches under its own ref only, so its build can't
+          # poison the cache main's runs restore.
+          dependency-caching: true
           config: |
             query-filters:
               - exclude:
