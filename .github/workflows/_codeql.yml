@@ -44,7 +44,9 @@ name: CodeQL
 # dependencies run, which a pull request, a Renovate update among them, can change. So it holds a
 # read-only token and uploads nothing. It saves the results as an artifact, and the upload job,
 # which runs nothing from the repository, uploads them with security-events: write. A build
-# therefore never holds that token: it can't dismiss alerts or call the code scanning API. It
+# therefore never holds that token: it can't upload, change or dismiss alerts. It holds
+# security-events: read, because without it the CodeQL Action waits about 15 seconds on each call
+# to its API that the token can't make; with it, a build can read the repository's alerts. It
 # still runs in the job that writes the results, so it can alter what that job saves, and with it
 # the analysis of its own pull request. That's the limit of what a job that builds untrusted code
 # can be trusted with; a check in a later step of the same job would run after the build too.
@@ -56,7 +58,7 @@ name: CodeQL
 # The calling job must grant the union of what the jobs below declare, or the call fails before
 # anything runs:
 #   contents: read         # languages: read the repository's languages; analyze: check it out
-#   security-events: write # upload: upload the results to code scanning
+#   security-events: write # analyze: reach the CodeQL Action's API; upload: upload the results
 #   actions: read          # upload: let CodeQL read the workflow run
 #   id-token: write        # results: exchange the job's OIDC token with Octo STS
 on:
@@ -137,8 +139,11 @@ jobs:
     needs: languages
     if: needs.languages.outputs.matrix != ''
     runs-on: ${{ matrix.runner }}
+    # A hung build otherwise holds its runner for six hours, the default.
+    timeout-minutes: 60
     permissions:
       contents: read # Check out the repository
+      security-events: read # Let the CodeQL Action reach its API; see the top
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}

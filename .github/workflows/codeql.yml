@@ -13,6 +13,13 @@ on:
 
 permissions: {}
 
+# A newer push to a pull request cancels the analysis of the previous one, which would otherwise
+# hold its runners to the end. Every other run gets a group of its own, so the analysis of a merge
+# group, a push to main or the weekly run is never cancelled or held back.
+concurrency:
+  group: codeql-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   codeql:
     name: CodeQL
